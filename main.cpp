@@ -84,7 +84,7 @@ int main(int argc, char* argv[])
     const u64 h3 = generator.form_hash32();
     generator.add_salt( (file_size % 2) == 0 ? S4 : S2 );
     generator.add_salt( (file_size % 2) == 0 ? S2 : S0 );
-    u64 h4 = generator.form_hash32();
+    const u64 h4 = generator.form_hash32();
     const u128& hash = {
         h1 | (h2 << 32),
         h3 | (h4 << 32)

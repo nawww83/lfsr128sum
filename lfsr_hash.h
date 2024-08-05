@@ -85,10 +85,10 @@ public:
         g_241x4.next(x);
     }
 
-    auto form_hash32() {
+    u32 form_hash32() {
         auto st1 = g_251x4.get_state();
         auto st2 = g_241x4.get_state();
-        lfsr8::u32 hash;
+        u32 hash;
         hash  = ((st1[0] ^ st1[4])) ^ ((st2[0] ^ st2[4]));
         hash <<= 8;
         hash |= ((st1[1] ^ st1[5])) ^ ((st2[1] ^ st2[5]));
