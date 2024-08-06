@@ -6,7 +6,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_compile_options("-msse4.1")
-add_executable(lfsr128sum main.cpp)
+add_executable(lfsr128sum main.cpp
+    lfsr_hash.h tests.h)
 
 include(GNUInstallDirs)
 install(TARGETS lfsr128sum

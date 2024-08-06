@@ -8,6 +8,7 @@
 #endif
 
 #include "lfsr_hash.h"
+#include "tests.h"
 
 using namespace std;
 
@@ -27,8 +28,14 @@ int main(int argc, char* argv[])
         std::cout << "Передайте путь к файлу при запуске утилиты хэширования:\n";
         std::cout << "> lfsr128sum path_to_file\n";
         std::cout << std::flush;
-        return -1;
+        //
+        lfsr_hash_benchmark();
+        // test_lfsr_hash_coverage_1();
+        // test_lfsr_hash_coverage_2();
+        //
+        return 0;
     }
+    //
     const std::string& file_name = argv[1];
     std::ifstream fin(file_name, std::ifstream::binary);
     if (!fin) {
@@ -40,21 +47,19 @@ int main(int argc, char* argv[])
     assert(file_size > 0);
     fin.seekg(0, std::ios::beg);
     using namespace lfsr_hash;
-    generator.reset();
-    const salt file_salt1 = {static_cast<int>(file_size % 31), static_cast<u16>(file_size), static_cast<u16>(3*file_size)};
-    generator.add_salt(file_salt1); // To be safe when zero padding made, see below.
-    generator.add_salt(S1);
-    generator.add_salt(S0);
-    generator.add_salt( (file_size % 2) == 0 ? S0 : S4 );
-    constexpr size_t blockSize = 64*4; // doesn't change it!
+    constexpr size_t blockSize = 64*1024; // doesn't change it!
+    const salt file_salt = {static_cast<int>(file_size % blockSize), static_cast<u16>(file_size), static_cast<u16>(file_size)};
     static_assert((chunkSize % blockSize) == 0);
+    u128 hash = {0, 0};
     while (!fin.eof()) {
         fin.read(reinterpret_cast<char*>( buffer.data() ), buffer.size());
         const auto bytesRead = fin.gcount();
         if (bytesRead == chunkSize) {
             constexpr size_t n = chunkSize / blockSize;
             for (size_t i=0; i<n; ++i) {
-                generator.process_input<blockSize>(buffer.data() + i*blockSize);
+                u128 inner_hash = hash128<blockSize>(generator, buffer.data() + i*blockSize);
+                hash.first ^= inner_hash.first;
+                hash.second ^= inner_hash.second;
             }
         } else {
             std::fill(buffer.begin() + (ptrdiff_t)bytesRead,
@@ -62,33 +67,18 @@ int main(int argc, char* argv[])
             const size_t n = bytesRead / blockSize;
             const size_t r = bytesRead % blockSize;
             for (size_t i=0; i<n; ++i) {
-                generator.process_input<blockSize>(buffer.data() + i*blockSize);
+                u128 inner_hash = hash128<blockSize>(generator, buffer.data() + i*blockSize, file_salt);
+                hash.first ^= inner_hash.first;
+                hash.second ^= inner_hash.second;
             }
             if (r > 0) {
-                generator.process_input<blockSize>(buffer.data() + n*blockSize); // Uses zero padding assumption.
+                u128 inner_hash = hash128<blockSize>(generator, buffer.data() + n*blockSize, file_salt);
+                hash.first ^= inner_hash.first;
+                hash.second ^= inner_hash.second;
             }
         }
     }
     fin.close();
-    generator.add_salt(S0);
-    generator.add_salt(S1);
-    const salt file_salt2 = {static_cast<int>(file_size % 31), static_cast<u16>(3*file_size), static_cast<u16>(file_size)};
-    generator.add_salt(file_salt2); // To be safe when zero padding made, see above.
-    generator.add_salt( (file_size % 2) == 0 ? S1 : S0 );
-    const u64 h1 = generator.form_hash32();
-    generator.add_salt( (file_size % 2) == 0 ? S3 : S2 );
-    generator.add_salt( (file_size % 2) == 0 ? S4 : S2 );
-    const u64 h2 = generator.form_hash32();
-    generator.add_salt( (file_size % 2) == 0 ? S2 : S3 );
-    generator.add_salt( (file_size % 2) == 0 ? S3 : S1 );
-    const u64 h3 = generator.form_hash32();
-    generator.add_salt( (file_size % 2) == 0 ? S4 : S2 );
-    generator.add_salt( (file_size % 2) == 0 ? S2 : S0 );
-    const u64 h4 = generator.form_hash32();
-    const u128& hash = {
-        h1 | (h2 << 32),
-        h3 | (h4 << 32)
-    };
     std::cout << std::hex << std::setw(16) << std::setfill('0') << hash.first <<
                 std::setw(16) << std::setfill('0') << hash.second << std::dec <<
                 '\t' << file_name << std::endl;
