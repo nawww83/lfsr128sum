@@ -10,6 +10,8 @@
 #include "lfsr_hash.h"
 #include "tests.h"
 
+static constexpr auto VERSION = "v1.0";
+
 using namespace std;
 
 constexpr size_t chunkSize = 8*1024*1024;
@@ -25,6 +27,8 @@ int main(int argc, char* argv[])
     SetConsoleCP(CP_UTF8);
 #endif
     if (argc < 2) {
+        std::cout << "lfsr128sum " << VERSION << '\n';
+        std::cout << std::flush;
         std::cout << "Передайте путь к файлу при запуске утилиты хэширования:\n";
         std::cout << "> lfsr128sum path_to_file\n";
         std::cout << std::flush;
