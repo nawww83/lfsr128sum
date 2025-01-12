@@ -14,6 +14,7 @@
 #include <smmintrin.h>
 #endif
 
+
 namespace lfsr8 {
 using u64 = uint64_t;
 using u32 = uint32_t;
@@ -21,6 +22,7 @@ using u16 = uint16_t;
 using u16x8 = std::array<u16, 8>;
 using u32x4 = std::array<u32, 4>;
 
+// https://stackoverflow.com/questions/24053582/change-member-typedef-depending-on-template-parameter
 template <int m>
 class MType {
 public:
@@ -28,15 +30,12 @@ public:
     typedef typename std::conditional<(m <= 4), u32x4, u16x8>::type STATE;
 };
 
-template <int m, typename T = typename MType<m>::STATE>
-static auto is_zero(T st) {
-    bool zf = true;
-    for (int i=0; i<m; ++i) {
-        zf &= (st[i] == 0);
-    }
-    return zf;
-}
-
+/**
+ * @brief Класс генератор LFSR общего назначения в поле GF(p^m).
+ * Хранит числа в 32-битных ячейках.
+ * p должно быть простым числом в интервале [2, 256).
+ * m - натуральное число на отрезке [1,8].
+ */
 template <int p, int m>
 class LFSR {
     using STATE = typename MType<m>::STATE;
@@ -94,13 +93,12 @@ public:
                 m_state[i] %= p;
             }
         }
-#else // general purpose CPU
+#else // Для процессора общего назначения.
         const SAMPLE m_v = m_state[m-1];
         for (int i=m-1; i>0; i--) {
             m_state[i] = (m_state[i-1] + m_v*m_K[i]) % p;
         }
         m_state[0] = (input + m_v*m_K[0]) % p;
-        // m_v = m_state[m-1];
 #endif
     }
     void back(SAMPLE input=0) {
@@ -142,7 +140,7 @@ private:
         const auto x = m_K[0];
         assert(x != 0);
         m_inv_K0 = 1;
-        while (true) {
+        for (;;) {
             if (((x*m_inv_K0) % p) == 1) {
                 break;
             }
@@ -151,12 +149,18 @@ private:
     }
 };
 
+/**
+ * @brief Класс сдвоенного LFSR генератора длиной m = 4*2.
+ * Хранит числа в 16-битных ячейках.
+ * Цель данного генератора: оптимизировать использование основного LFSR класса, если требуется парная работа генераторов.
+ * Генераторы работают независимо, но в одном 128-битном регистре.
+ */
 template <int p>
 class LFSR_paired_2x4 {
     static_assert(p < 256);
     static_assert(p > 1);
 public:
-    constexpr LFSR_paired_2x4(u16x8 K): m_K(K) {};
+    constexpr LFSR_paired_2x4(u16x8 K): m_K(K) {m_calc_inv_K();};
     void set_state(u16x8 state) {
         m_state = state;
     }
@@ -165,6 +169,7 @@ public:
     }
     void set_K(u16x8 K) {
         m_K = K;
+        m_calc_inv_K();
     }
     void next(u16 input=0) {
 #ifdef USE_SSE
@@ -184,17 +189,17 @@ public:
         d = _mm_add_epi16(inp, d);
         _mm_store_si128((__m128i*)&m_state[0], d);
         for (int i=0; i<8; ++i) {
-            m_state[i] %= p;
+            m_state[i] %= static_cast<u16>(p);
         }
 #else
         u16 m_v3 = m_state[3];
         u16 m_v7 = m_state[7];
         for (int i=7; i>4; i--) {
-            m_state[i] = (m_state[i-1] + m_v7*m_K[i]) % p;
-            m_state[i-4] = (m_state[i-1-4] + m_v3*m_K[i-4]) % p;
+            m_state[i] = (m_state[i-1] + m_v7*m_K[i]) % static_cast<u16>(p);
+            m_state[i-4] = (m_state[i-1-4] + m_v3*m_K[i-4]) % static_cast<u16>(p);
         }
-        m_state[0] = (input + m_v3*m_K[0]) % p;
-        m_state[4] = (input + m_v7*m_K[4]) % p;
+        m_state[0] = (input + m_v3*m_K[0]) % static_cast<u16>(p);
+        m_state[4] = (input + m_v7*m_K[4]) % static_cast<u16>(p);
 #endif
     }
     void next(u16 inp1, u16 inp2) {
@@ -218,17 +223,74 @@ public:
         d = _mm_add_epi16(inp, d);
         _mm_store_si128((__m128i*)&m_state[0], d);
         for (int i=0; i<8; ++i) {
-            m_state[i] %= p;
+            m_state[i] %= static_cast<u16>(p);
         }
 #else
         u16 m_v3 = m_state[3];
         u16 m_v7 = m_state[7];
         for (int i=7; i>4; i--) {
-            m_state[i] = (m_state[i-1] + m_v7*m_K[i]) % p;
-            m_state[i-4] = (m_state[i-1-4] + m_v3*m_K[i-4]) % p;
+            m_state[i] = (m_state[i-1] + m_v7*m_K[i]) % static_cast<u16>(p);
+            m_state[i-4] = (m_state[i-1-4] + m_v3*m_K[i-4]) % static_cast<u16>(p);
         }
-        m_state[0] = (inp1 + m_v3*m_K[0]) % p;
-        m_state[4] = (inp2 + m_v7*m_K[4]) % p;
+        m_state[0] = (inp1 + m_v3*m_K[0]) % static_cast<u16>(p);
+        m_state[4] = (inp2 + m_v7*m_K[4]) % static_cast<u16>(p);
+#endif
+    }
+    void back(u16 inp1, u16 inp2) {
+#ifdef USE_SSE
+        __m128i mask1 = _mm_slli_si128(_mm_set1_epi16(-1), 2);
+        const __m128i mask2 = _mm_set_epi16(-1, -1, -1, 0, -1, -1, -1, -1);
+
+        __m128i input = _mm_andnot_si128( mask1, _mm_set1_epi16(inp1) );
+        input = _mm_or_si128( input, _mm_andnot_si128( mask2, _mm_set1_epi16(inp2) ) );
+
+        __m128i state = _mm_andnot_si128( mask1, _mm_set1_epi16(m_state[0]) );
+        state = _mm_or_si128( state, _mm_andnot_si128( mask2, _mm_set1_epi16(m_state[4]) ) );
+
+        __m128i a = _mm_sub_epi16(state, input);
+
+        __m128i prime = _mm_andnot_si128( mask1, _mm_set1_epi16(p) );
+        prime = _mm_or_si128( prime, _mm_andnot_si128( mask2, _mm_set1_epi16(p) ) );
+
+        a = _mm_add_epi16(a, prime);
+
+        __m128i i_coeffs = _mm_load_si128((const __m128i*)&m_inv_K[0]);
+        a = _mm_mullo_epi16(a, i_coeffs);
+        a = _mm_add_epi16(a, _mm_slli_si128(a, 2));
+        a = _mm_add_epi16(a, _mm_slli_si128(a, 4));
+        {
+            alignas(16) u16x8 tmp;
+            _mm_store_si128((__m128i*)&tmp[0], a);
+            for (int i=0; i<8; ++i) {
+                tmp[i] %= static_cast<u16>(p);
+            }
+            a = _mm_load_si128((const __m128i*)&tmp[0]);
+            // a = _mm_set_epi16(m_v_2, m_v_2, m_v_2, m_v_2, m_v_1, m_v_1, m_v_1, m_v_1)
+        }
+
+        const __m128i mask = _mm_set_epi16(0, -1, -1, -1, 0, -1, -1, -1);
+        __m128i d = _mm_load_si128((const __m128i*)&m_state[0]);
+        d = _mm_and_si128(mask, _mm_srli_si128(d, 2));
+
+        __m128i coeffs = _mm_load_si128((const __m128i*)&m_K[0]);
+        coeffs = _mm_and_si128(mask, _mm_srli_si128(coeffs, 2));
+        coeffs = _mm_add_epi16(coeffs, _mm_set_epi16(-1, 0, 0, 0, -1, 0, 0, 0));
+
+        a = _mm_sub_epi16(d, _mm_mullo_epi16(a, coeffs));
+        a = _mm_add_epi16(a, _mm_and_si128(mask, _mm_set1_epi16(static_cast<u16>(p*p))));
+        _mm_store_si128((__m128i*)&m_state[0], a);
+        for (int i=0; i<8; ++i) {
+            m_state[i] %= static_cast<u16>(p);
+        }
+#else
+        const u16 m_v_1 = (m_inv_K[0]*(m_state[0] - inp1 + static_cast<u16>(p))) % static_cast<u16>(p);
+        const u16 m_v_2 = (m_inv_K[4]*(m_state[4] - inp2 + static_cast<u16>(p))) % static_cast<u16>(p);
+        for (int i=0; i<3; i++) {
+            m_state[i] = (m_state[i+1] - m_v_1*m_K[i+1] + static_cast<u16>(p*p)) % static_cast<u16>(p);
+            m_state[i+4] = (m_state[i+5] - m_v_2*m_K[i+5] + static_cast<u16>(p*p)) % static_cast<u16>(p);
+        }
+        m_state[3] = m_v_1;
+        m_state[7] = m_v_2;
 #endif
     }
     auto get_state() const {
@@ -249,8 +311,28 @@ public:
         return res;
     }
 private:
-    u16x8 m_state {};
-    u16x8 m_K {};
+    alignas(16) u16x8 m_state {}; // must be aligned.
+    alignas(16) u16x8 m_K {};
+    alignas(16) u16x8 m_inv_K {};
+    void m_calc_inv_K() {
+        const auto x0 = m_K[0];
+        const auto x4 = m_K[4];
+        assert(x0 != 0);
+        assert(x4 != 0);
+        m_inv_K[0] = 1;
+        m_inv_K[4] = 1;
+        bool achieved0 = false;
+        bool achieved4 = false;
+        for (;;) {
+            achieved0 = achieved0 ? achieved0 : ((x0*m_inv_K[0]) % static_cast<u16>(p)) == u16(1);
+            achieved4 = achieved4 ? achieved4 : ((x4*m_inv_K[4]) % static_cast<u16>(p)) == u16(1);
+            if (achieved0 && achieved4) {
+                break;
+            }
+            m_inv_K[0] += !achieved0;
+            m_inv_K[4] += !achieved4;
+        }
+    }
 };
 
 }
