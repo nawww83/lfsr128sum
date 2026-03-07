@@ -2,89 +2,143 @@
 #include <iomanip>
 #include <fstream>
 #include <vector>
+#include <filesystem>
+#include <chrono>
 #ifdef _WIN32
 #include <windows.h>
-#include <clocale>
 #endif
 
 #include "lfsr_hash.h"
 #include "tests.h"
 
-static constexpr auto VERSION = "v1.0";
+namespace fs = std::filesystem;
+using namespace lfsr_hash;
 
-using namespace std;
+constexpr size_t chunkSize = 8 * 1024 * 1024;
+constexpr size_t blockSize = 64 * 1024;
+static std::vector<uint8_t> buffer(chunkSize);
+static gens generator;
 
-constexpr size_t chunkSize = 8*1024*1024;
-static vector<uint8_t> buffer(chunkSize, 0);
+#include <iostream>
 
-static lfsr_hash::gens generator;
-
-int main(int argc, char* argv[])
-{
-#ifdef _WIN32
-    std::setlocale(LC_CTYPE, ".UTF8");
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
+// Проверяем все возможные макросы компиляторов
+#if defined(__AVX2__)
+    #define SIMD_STATUS "AVX2"
+#elif defined(__AVX__)
+    #define SIMD_STATUS "AVX"
+#elif defined(__SSE4_2__)
+    #define SIMD_STATUS "SSE4.2"
+#elif defined(__SSE4_1__)
+    #define SIMD_STATUS "SSE4.1"
+#elif defined(_M_AMD64) || defined(_M_X64) || defined(__x86_64__)
+    #define SIMD_STATUS "x86_64 (Base SSE2)"
+#else
+    #define SIMD_STATUS "НЕ ОПРЕДЕЛЕН (Generic C++)"
 #endif
-    if (argc < 2) {
-        std::cout << "lfsr128sum " << VERSION << '\n';
-        std::cout << std::flush;
-        std::cout << "Передайте путь к файлу при запуске утилиты хэширования:\n";
-        std::cout << "> lfsr128sum path_to_file\n";
-        std::cout << std::flush;
-        //
-        lfsr_hash_benchmark();
-        // test_lfsr_hash_coverage_1();
-        // test_lfsr_hash_coverage_2();
-        //
-        return 0;
-    }
-    //
-    const std::string& file_name = argv[1];
-    std::ifstream fin(file_name, std::ifstream::binary);
-    if (!fin) {
-        std::cerr << "Ошибка открытия файла: " << file_name << std::endl;
-        return 1;
-    }
-    fin.seekg(0, std::ios::end);
-    const auto file_size = fin.tellg();
-    assert(file_size > 0);
-    fin.seekg(0, std::ios::beg);
-    using namespace lfsr_hash;
-    constexpr size_t blockSize = 64*1024; // doesn't change it!
-    const salt file_salt = {static_cast<int>(file_size % blockSize), static_cast<u16>(file_size), static_cast<u16>(file_size)};
-    static_assert((chunkSize % blockSize) == 0);
-    u128 hash = {0, 0};
-    while (!fin.eof()) {
-        fin.read(reinterpret_cast<char*>( buffer.data() ), buffer.size());
-        const auto bytesRead = fin.gcount();
-        if (bytesRead == chunkSize) {
-            constexpr size_t n = chunkSize / blockSize;
-            for (size_t i=0; i<n; ++i) {
-                u128 inner_hash = hash128<blockSize>(generator, buffer.data() + i*blockSize);
-                hash.first ^= inner_hash.first;
-                hash.second ^= inner_hash.second;
+
+// Также проверим наш кастомный флаг из CMake
+#ifdef SIMD_ENABLED
+    #define CMAKE_FLAG "ОК"
+#else
+    #define CMAKE_FLAG "ОТСУТСТВУЕТ"
+#endif
+
+void print_simd_info() {
+    std::cout << "--- Информация о сборке ---" << std::endl;
+    std::cout << "Набор инструкций: " << SIMD_STATUS << std::endl;
+    std::cout << "Флаг из CMake:    " << CMAKE_FLAG << std::endl;
+    std::cout << "---------------------------" << std::endl;
+}
+
+
+int main(int argc, char *argv[])
+{
+    print_simd_info();
+    try
+    {
+#ifdef _WIN32
+        SetConsoleOutputCP(CP_UTF8);
+#endif
+        if (argc < 2)
+        {
+            std::cout << "lfsr128sum v2.1\nИспользование: lfsr128sum <файл> | --test | --bench\n";
+            return 0;
+        }
+
+        const std::string arg = argv[1];
+        if (arg == "--test")
+        {
+            test_lfsr_hash_coverage_1();
+            test_lfsr_hash_coverage_2();
+            return 0;
+        }
+        if (arg == "--bench")
+        {
+            lfsr_hash_benchmark();
+            return 0;
+        }
+
+        fs::path p(arg);
+        if (!fs::exists(p) || !fs::is_regular_file(p))
+        {
+            std::cerr << "Ошибка: Файл не найден или недоступен.\n";
+            return 1;
+        }
+
+        const uint64_t total_size = fs::file_size(p);
+        const salt file_salt = {
+            static_cast<int>(total_size % blockSize),
+            static_cast<uint16_t>(total_size & 0xFFFF),
+            static_cast<uint16_t>((total_size >> 16) ^ (total_size >> 32))};
+
+        std::ifstream fin(p, std::ifstream::binary);
+        if (!fin)
+            throw std::runtime_error("Не удалось открыть файл.");
+
+        u128 total_hash = {0, 0};
+        uint64_t processed = 0;
+        int last_pct = -1;
+        generator.reset();
+
+        while (fin.read(reinterpret_cast<char *>(buffer.data()), buffer.size()) || fin.gcount() > 0)
+        {
+            const size_t bytesRead = static_cast<size_t>(fin.gcount());
+            const bool isLast = (bytesRead < chunkSize);
+
+            if (isLast)
+            {
+                std::fill(buffer.begin() + bytesRead, buffer.end(), 0);
+                generator.add_salt(file_salt);
             }
-        } else {
-            std::fill(buffer.begin() + (ptrdiff_t)bytesRead,
-                      buffer.begin() + (ptrdiff_t)bytesRead + (ptrdiff_t)blockSize, 0); // Make zero padding.
-            const size_t n = bytesRead / blockSize;
-            const size_t r = bytesRead % blockSize;
-            for (size_t i=0; i<n; ++i) {
-                u128 inner_hash = hash128<blockSize>(generator, buffer.data() + i*blockSize, file_salt);
-                hash.first ^= inner_hash.first;
-                hash.second ^= inner_hash.second;
+
+            const size_t nBlocks = (isLast ? (bytesRead + blockSize - 1) / blockSize : chunkSize / blockSize);
+            for (size_t i = 0; i < nBlocks; ++i)
+            {
+                auto data = std::span(buffer).subspan(i * blockSize, blockSize);
+                u128 res = hash128(generator, std::as_bytes(data));
+                total_hash.first ^= res.first;
+                total_hash.second ^= res.second;
             }
-            if (r > 0) {
-                u128 inner_hash = hash128<blockSize>(generator, buffer.data() + n*blockSize, file_salt);
-                hash.first ^= inner_hash.first;
-                hash.second ^= inner_hash.second;
+
+            processed += bytesRead;
+            int pct = static_cast<int>((processed * 100) / total_size);
+            if (pct != last_pct && total_size > chunkSize)
+            {
+                std::cerr << "\rProgress: " << pct << "%" << std::flush;
+                last_pct = pct;
             }
         }
+        if (total_size > chunkSize)
+            std::cerr << "\r" << std::string(20, ' ') << "\r";
+
+        std::cout << std::hex << std::setw(16) << std::setfill('0') << total_hash.first
+                  << std::setw(16) << std::setfill('0') << total_hash.second
+                  << std::dec << "  " << p.filename().string() << std::endl;
     }
-    fin.close();
-    std::cout << std::hex << std::setw(16) << std::setfill('0') << hash.first <<
-                std::setw(16) << std::setfill('0') << hash.second << std::dec <<
-                '\t' << file_name << std::endl;
+    catch (const std::exception &e)
+    {
+        std::cerr << "Критическая ошибка: " << e.what() << std::endl;
+        return 1;
+    }
     return 0;
 }
