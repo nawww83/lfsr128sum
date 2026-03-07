@@ -80,7 +80,7 @@ int main(int argc, char *argv[])
 
         if (arg == "--test")
         {
-            check_hash();
+            check_hash(VERSION);
             test_simd_consistency();
             test_block_simd_consistency();
             test_lfsr_hash_coverage_1();

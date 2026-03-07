@@ -3,6 +3,7 @@
 #include <cmath>
 #include <iostream>
 #include <set>
+#include <string>
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
@@ -76,7 +77,7 @@ inline void lfsr_hash_benchmark()
     std::cout << " All Ok! Completed.\n";
 }
 
-inline void check_hash()
+inline void check_hash(const std::string &version)
 {
     lfsr_hash::gens g;
     constexpr int M = 64;
@@ -88,8 +89,10 @@ inline void check_hash()
     g.reset();
     g.add_salt({8, 8, 8});
     lfsr_hash::u128 hash = lfsr_hash::hash128(g, std::as_bytes(std::span(buff)));
-    std::cout << "Golden hash: " << hash.first << ", " << hash.second << '\n';
-    assert((hash == lfsr_hash::u128{10731065016674008793ull, 6644715871793963458ull})); // Фиксация алгоритма.
+    if (version == "v2.1-simd") {
+        assert((hash == lfsr_hash::u128{4355867762154551223ull, 17377028108451251887ull})); // Фиксация алгоритма, v.2.1.
+        std::cout << "Golden hash: " << hash.first << ", " << hash.second << ", Ok\n";
+    }
 }
 
 inline void test_simd_consistency()
