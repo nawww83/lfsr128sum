@@ -11,6 +11,8 @@
 #include "lfsr_hash.h"
 #include "tests.h"
 
+static constexpr auto VERSION = "v2.1-simd";
+
 namespace fs = std::filesystem;
 using namespace lfsr_hash;
 
@@ -19,55 +21,68 @@ constexpr size_t blockSize = 64 * 1024;
 static std::vector<uint8_t> buffer(chunkSize);
 static gens generator;
 
-#include <iostream>
-
 // Проверяем все возможные макросы компиляторов
 #if defined(__AVX2__)
-    #define SIMD_STATUS "AVX2"
+#define SIMD_STATUS "AVX2"
 #elif defined(__AVX__)
-    #define SIMD_STATUS "AVX"
+#define SIMD_STATUS "AVX"
 #elif defined(__SSE4_2__)
-    #define SIMD_STATUS "SSE4.2"
+#define SIMD_STATUS "SSE4.2"
 #elif defined(__SSE4_1__)
-    #define SIMD_STATUS "SSE4.1"
+#define SIMD_STATUS "SSE4.1"
 #elif defined(_M_AMD64) || defined(_M_X64) || defined(__x86_64__)
-    #define SIMD_STATUS "x86_64 (Base SSE2)"
+#define SIMD_STATUS "x86_64 (Base SSE2)"
 #else
-    #define SIMD_STATUS "НЕ ОПРЕДЕЛЕН (Generic C++)"
+#define SIMD_STATUS "НЕ ОПРЕДЕЛЕН (Generic C++)"
 #endif
 
-// Также проверим наш кастомный флаг из CMake
 #ifdef SIMD_ENABLED
-    #define CMAKE_FLAG "ОК"
+#define CMAKE_FLAG "ОК"
 #else
-    #define CMAKE_FLAG "ОТСУТСТВУЕТ"
+#define CMAKE_FLAG "ОТСУТСТВУЕТ"
 #endif
 
-void print_simd_info() {
+[[maybe_unused]] void print_simd_info()
+{
     std::cout << "--- Информация о сборке ---" << std::endl;
     std::cout << "Набор инструкций: " << SIMD_STATUS << std::endl;
     std::cout << "Флаг из CMake:    " << CMAKE_FLAG << std::endl;
     std::cout << "---------------------------" << std::endl;
 }
 
-
 int main(int argc, char *argv[])
 {
-    print_simd_info();
+    // print_simd_info();
     try
     {
 #ifdef _WIN32
         SetConsoleOutputCP(CP_UTF8);
 #endif
+
         if (argc < 2)
         {
-            std::cout << "lfsr128sum v2.1\nИспользование: lfsr128sum <файл> | --test | --bench\n";
+            std::cout << "lfsr128sum " << VERSION << "\n"; // <-- Вывод здесь
+            std::cout << "Использование: lfsr128sum <путь_к_файлу> [опции]\n\n"
+                      << "Опции:\n"
+                      << "  --test    Запустить тесты корректности и покрытия\n"
+                      << "  --bench   Запустить бенчмарк производительности\n"
+                      << "  --version Вывести версию программы\n";
             return 0;
         }
 
         const std::string arg = argv[1];
+
+        if (arg == "--version" || arg == "-v")
+        {
+            std::cout << "lfsr128sum version " << VERSION << std::endl;
+            return 0;
+        }
+
         if (arg == "--test")
         {
+            check_hash();
+            test_simd_consistency();
+            test_block_simd_consistency();
             test_lfsr_hash_coverage_1();
             test_lfsr_hash_coverage_2();
             return 0;

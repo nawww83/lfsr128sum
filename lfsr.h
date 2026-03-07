@@ -81,10 +81,11 @@ namespace lfsr8
     {
         using SAMPLE = typename lfsr8::MType<m>::SAMPLE;
         // 1. Считаем m_v один раз (здесь деление неизбежно)
-        const u32 diff = ( state[0] >= input ? state[0] - input : state[0] - input + (SAMPLE)p ) % (u16)p;
-        const u32 m_v = ( (u32)K_inv[0] * diff ) % (u16)p;
+        const u32 diff = (state[0] >= input ? state[0] - input : state[0] - input + (SAMPLE)p) % (u16)p;
+        const u32 m_v = ((u32)K_inv[0] * diff) % (u16)p;
         // 2. В цикле убираем лишние Modulo
-        for (int i = 0; i < m - 1; i++) {
+        for (int i = 0; i < m - 1; i++)
+        {
             // Явно приводим к типу SAMPLE, который завязан на шаблонный p
             // Это заставит компилятор использовать оптимизированную последовательность для константы
             const u32 prod = m_v * (u32)K[i + 1];
@@ -102,7 +103,7 @@ namespace lfsr8
         // m_v *= K_inv[0];
         // m_v %= (SAMPLE)p;
         // for (int i = 0; i < m - 1; i++) {
-            // state[i] = (state[i + 1] - m_v * K[i + 1] + (SAMPLE)(p) * (SAMPLE)(p)) % (SAMPLE)p;
+        // state[i] = (state[i + 1] - m_v * K[i + 1] + (SAMPLE)(p) * (SAMPLE)(p)) % (SAMPLE)p;
         // }
         // state[m - 1] = m_v;
     }
@@ -115,7 +116,7 @@ namespace lfsr8
         for (int i = 0; i < exp; ++i)
         {
             // Проверка: не превысит ли следующее умножение предел типа T
-            if ( i > 0 && baseT > ((std::numeric_limits<T>::max)() / result) )
+            if (i > 0 && baseT > ((std::numeric_limits<T>::max)() / result))
             {
                 return 0; // Возвращаем 0 как маркер переполнения
             }
@@ -160,7 +161,7 @@ namespace lfsr8
             m_calculate_inverse_of_K();
         };
 
-         /**
+        /**
          * @brief Максимальный период генератора.
          */
         static constexpr auto T_MAX = safe_ipow<u64>(p, m) - 1;
@@ -241,7 +242,7 @@ namespace lfsr8
          */
         void square()
         {
-           mult_by(m_state);
+            mult_by(m_state);
         }
 
         /**
@@ -249,12 +250,12 @@ namespace lfsr8
          * Итоговое состояние генератора становится равным x^(s+t).
          * @param other Другое состояние x^t.
          */
-        void mult_by(const STATE& other)
+        void mult_by(const STATE &other)
         {
             STATE old_state = m_state;
             // Если не делать условную ссылку, то mult_by(m_state) даст неправильный результат, потому что
             // next(v) меняет m_state.
-            const STATE& other_ref = other == m_state ? old_state : other;
+            const STATE &other_ref = other == m_state ? old_state : other;
             m_state.fill(0);
             for (int power = 2 * m - 2; power >= 0; --power)
             {
@@ -262,8 +263,10 @@ namespace lfsr8
                 for (int i = 0; i < power + 1; ++i)
                 {
                     const int j = power - i;
-                    if ((j >= m) || (j < 0)) continue;
-                    if ((i >= m) || (i < 0)) continue;
+                    if ((j >= m) || (j < 0))
+                        continue;
+                    if ((i >= m) || (i < 0))
+                        continue;
                     v += ((u32)old_state[i] * (u32)other_ref[j]) % (u16)p;
                 }
                 next(static_cast<u16>(v));
@@ -296,7 +299,7 @@ namespace lfsr8
          * @param q Показатель степени.
          * @return Состояние x^(qt).
          */
-        static STATE power_by(const STATE& state, const STATE& K, u64 q)
+        static STATE power_by(const STATE &state, const STATE &K, u64 q)
         {
             LFSR<p, m> lfsr{K};
             lfsr.set_state(state);
@@ -310,7 +313,7 @@ namespace lfsr8
          * @param K Коэффициенты порождающего полинома g(x).
          * @return Состояние, 1/x^t.
          */
-        static STATE inverse_of(const STATE& state, const STATE& K)
+        static STATE inverse_of(const STATE &state, const STATE &K)
         {
             return power_by(state, K, T_MAX - 1);
         }
@@ -332,7 +335,7 @@ namespace lfsr8
          * @param state Заданное состояние.
          * @return Да/нет.
          */
-        bool is_state(const STATE& state) const
+        bool is_state(const STATE &state) const
         {
 #ifdef USE_SSE
             bool result = true;
@@ -415,6 +418,14 @@ namespace lfsr8
         static_assert(p < 256);
         static_assert(p > 1);
 
+        // Маска, которая сохраняет все, кроме ячеек 0 и 4 (куда придет feedback)
+        // Порядок байт в epi8 (от 15 до 0):
+        // [S7, S7, S6, S6, S5, S5, 0, 0, S3, S3, S2, S2, S1, S1, 0, 0]
+        const __m128i mask_independent = _mm_setr_epi8(
+            0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // LFSR 1 (0-я ячейка занулена)
+            0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff  // LFSR 2 (4-я ячейка занулена)
+        );
+
     public:
         /**
          * @brief Конструктор с параметром.
@@ -424,7 +435,7 @@ namespace lfsr8
          */
         constexpr LFSR_paired_2x4(u16x8 K) : m_K(K) { m_calculate_inverse_of_K(); };
 
-        void set_state(const u16x8& state)
+        void set_state(const u16x8 &state)
         {
             m_state = state;
         }
@@ -434,7 +445,7 @@ namespace lfsr8
             m_state = {1, 0, 0, 0, 1, 0, 0, 0};
         }
 
-        void set_K(const u16x8& K)
+        void set_K(const u16x8 &K)
         {
             m_K = K;
             m_calculate_inverse_of_K();
@@ -468,6 +479,35 @@ namespace lfsr8
             m_state[4] = (inp2 + (u32)m_v7 * (u32)m_K[4]) % (u16)p;
         }
 
+        void next_simd(u16 inp1, u16 inp2)
+        {
+            __m128i state = _mm_loadu_si128((const __m128i *)m_state.data());
+            __m128i K_vec = _mm_loadu_si128((const __m128i *)m_K.data());
+
+            // 1. Сдвиг влево (state[i] = state[i-1]):
+            // В Little-endian памяти сдвиг к старшим индексам — это slli_si128
+            __m128i shifted = _mm_slli_si128(state, 2);
+
+            // 2. Изоляция: зануляем 0 и 4
+            const __m128i iso_mask = _mm_setr_epi8(
+                0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
+            shifted = _mm_and_si128(shifted, iso_mask);
+
+            // 3. Feedback: v3 и v7. Используем _mm_set1_epi16 для правильного заполнения
+            __m128i v_vec = _mm_set_epi16(m_state[7], m_state[7], m_state[7], m_state[7],
+                                          m_state[3], m_state[3], m_state[3], m_state[3]);
+
+            // 4. Входные данные: ставим inp1 в ячейку 0, inp2 в ячейку 4
+            __m128i input_vec = _mm_setr_epi16(inp1, 0, 0, 0, inp2, 0, 0, 0);
+
+            // 5. Расчет
+            __m128i prod = _mm_mullo_epi16(v_vec, K_vec);
+            __m128i res = _mm_add_epi16(shifted, _mm_add_epi16(prod, input_vec));
+
+            _mm_storeu_si128((__m128i *)m_state.data(), simd_mod_p(res));
+        }
+
         /**
          * @brief Сделать шаг назад (один такт генератора). Обратно к next(inp1, inp2).
          * @param inp1 Входной символ (должен быть приведен по модулю p!) первого генератора.
@@ -486,6 +526,113 @@ namespace lfsr8
             m_state[7] = m_v_2;
         }
 
+        void back_simd(u16 inp1, u16 inp2)
+        {
+            const u32 up = static_cast<u32>(p);
+
+            // 1. Восстановление v1, v2
+            const u16 v1 = static_cast<u16>((static_cast<u32>(m_inv_K[0]) *
+                                             (static_cast<u32>(m_state[0]) + up - (static_cast<u32>(inp1) % up))) %
+                                            up);
+            const u16 v2 = static_cast<u16>((static_cast<u32>(m_inv_K[4]) *
+                                             (static_cast<u32>(m_state[4]) + up - (static_cast<u32>(inp2) % up))) %
+                                            up);
+
+            __m128i v_vec = _mm_set_epi16(v2, v2, v2, v2, v1, v1, v1, v1);
+            __m128i state = _mm_loadu_si128((const __m128i *)m_state.data());
+            __m128i K_vec = _mm_loadu_si128((const __m128i *)m_K.data());
+
+            // 2. Сдвиг вправо (state[i] = state[i+1])
+            __m128i shifted = _mm_srli_si128(state, 2);
+
+            // 3. Изоляция: зануляем ячейки 3 и 7
+            const __m128i back_mask = _mm_setr_epi8(
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0,
+                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0);
+            shifted = _mm_and_si128(shifted, back_mask);
+
+            // 4. Вычитание
+            __m128i prod_mod = simd_mod_p(_mm_mullo_epi16(v_vec, K_vec));
+            __m128i p_vec = _mm_set1_epi16(static_cast<short>(p));
+
+            // (shifted + p - prod_mod) % p
+            __m128i res = _mm_sub_epi16(_mm_add_epi16(shifted, p_vec), prod_mod);
+            __m128i next_state = simd_mod_p(res);
+
+            _mm_storeu_si128((__m128i *)m_state.data(), next_state);
+
+            // 5. Фиксируем v1/v2 в концах блоков
+            m_state[3] = v1;
+            m_state[7] = v2;
+        }
+
+        void next_simd_block(__m128i input_128)
+        {
+            __m128i state = _mm_loadu_si128((const __m128i *)m_state.data());
+            __m128i K_vec = _mm_loadu_si128((const __m128i *)m_K.data());
+
+            // 1. Сдвиг влево (индексы растут)
+            __m128i shifted = _mm_slli_si128(state, 2);
+
+            // 2. Изоляция ячеек 0 и 4
+            const __m128i iso_mask = _mm_setr_epi8(
+                0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
+            shifted = _mm_and_si128(shifted, iso_mask);
+
+            // 3. Feedback v3 и v7
+            __m128i v_vec = _mm_set_epi16(m_state[7], m_state[7], m_state[7], m_state[7],
+                                          m_state[3], m_state[3], m_state[3], m_state[3]);
+
+            // 4. Подмешиваем данные через ADD вместо XOR (для обратимости)
+            // Используем предварительный simd_mod_p для input, если байты > p
+            __m128i input_mod = simd_mod_p(input_128);
+            __m128i mixed = _mm_add_epi16(shifted, input_mod);
+
+            // 5. Результат: (Mixed + v*K) % p
+            __m128i prod = _mm_mullo_epi16(v_vec, K_vec);
+            __m128i res = _mm_add_epi16(mixed, prod);
+
+            _mm_storeu_si128((__m128i *)m_state.data(), simd_mod_p(res));
+        }
+
+        void back_simd_block(__m128i input_128)
+        {
+            const uint32_t up = static_cast<uint32_t>(p);
+            __m128i state = _mm_loadu_si128((const __m128i *)m_state.data());
+            __m128i K_vec = _mm_loadu_si128((const __m128i *)m_K.data());
+
+            // 1. Восстанавливаем v1 и v2 из текущих ячеек 0 и 4
+            // v = invK * (state - input) % p
+            alignas(16) uint16_t in_arr[8];
+            _mm_storeu_si128((__m128i *)in_arr, input_128);
+
+            const uint16_t v1 = static_cast<uint16_t>((static_cast<uint32_t>(m_inv_K[0]) *
+                                                       (static_cast<uint32_t>(m_state[0]) + up - (in_arr[0] % up))) %
+                                                      up);
+            const uint16_t v2 = static_cast<uint16_t>((static_cast<uint32_t>(m_inv_K[4]) *
+                                                       (static_cast<uint32_t>(m_state[4]) + up - (in_arr[4] % up))) %
+                                                      up);
+
+            __m128i v_vec = _mm_set_epi16(v2, v2, v2, v2, v1, v1, v1, v1);
+
+            // 2. Убираем вклад (v*K + input) через вычитание
+            __m128i prod = _mm_mullo_epi16(v_vec, K_vec);
+            __m128i added_val = simd_mod_p(_mm_add_epi16(prod, input_128));
+
+            __m128i p_vec = _mm_set1_epi16(static_cast<short>(p));
+            // (state + p - added_val) % p
+            __m128i shifted_only = simd_mod_p(_mm_sub_epi16(_mm_add_epi16(state, p_vec), added_val));
+
+            // 3. Обратный сдвиг ВПРАВО (srli)
+            __m128i restored = _mm_srli_si128(shifted_only, 2);
+
+            // 4. Записываем и фиксируем хвосты v1/v2
+            _mm_storeu_si128((__m128i *)m_state.data(), restored);
+            m_state[3] = v1;
+            m_state[7] = v2;
+        }
+
         /**
          * @brief Возвести в квадрат, то есть вычислить состояние (x^s)^2, где
          * x^s - текущее состояние (некоторая степень s вспомогательной переменной x).
@@ -493,7 +640,7 @@ namespace lfsr8
          */
         void square()
         {
-           mult_by(m_state);
+            mult_by(m_state);
         }
 
         /**
@@ -501,12 +648,12 @@ namespace lfsr8
          * Итоговое состояние генератора становится равным x^(s+t).
          * @param other Другое состояние x^t.
          */
-        void mult_by(const u16x8& other)
+        void mult_by(const u16x8 &other)
         {
             u16x8 old_state = m_state;
             // Если не делать условную ссылку, то mult_by(m_state) даст неправильный результат, потому что
             // next(v) меняет m_state.
-            const auto& other_ref = other == m_state ? old_state : other;
+            const auto &other_ref = other == m_state ? old_state : other;
             m_state.fill(0);
             for (int power = 2 * 4 - 2; power >= 0; --power)
             {
@@ -515,8 +662,10 @@ namespace lfsr8
                 for (int i = 0; i < power + 1; ++i)
                 {
                     const int j = power - i;
-                    if ((j >= 4) || (j < 0)) continue;
-                    if ((i >= 4) || (i < 0)) continue;
+                    if ((j >= 4) || (j < 0))
+                        continue;
+                    if ((i >= 4) || (i < 0))
+                        continue;
                     v1 += ((u32)old_state[i] * (u32)other_ref[j]) % (u16)p;
                     v2 += ((u32)old_state[i + 4] * (u32)other_ref[j + 4]) % (u16)p;
                 }
@@ -529,7 +678,7 @@ namespace lfsr8
             auto x = q;
             LFSR_paired_2x4<p> lfsr{m_K};
             lfsr.set_unit_state();
-            for (; x != 0; )
+            for (; x != 0;)
             {
                 if ((x & 1) == 1)
                     lfsr.mult_by(get_state());
@@ -549,7 +698,7 @@ namespace lfsr8
          * @param state Заданное состояние.
          * @return Да/нет.
          */
-        bool is_state_low(const u16x8& state) const
+        bool is_state_low(const u16x8 &state) const
         {
             bool result = true;
             for (int i = 0; i < 4; ++i)
@@ -564,7 +713,7 @@ namespace lfsr8
          * @param state Заданное состояние.
          * @return Да/нет.
          */
-        bool is_state_high(const u16x8& state) const
+        bool is_state_high(const u16x8 &state) const
         {
             bool result = true;
             for (int i = 0; i < 4; ++i)
@@ -608,6 +757,27 @@ namespace lfsr8
             }
             m_inv_K[0] = static_cast<u16>(inverse0);
             m_inv_K[4] = static_cast<u16>(inverse4);
+        }
+
+        // Вспомогательная функция для векторизованного (x % p)
+        // Работает сразу с 8 значениями u16
+        inline __m128i simd_mod_p(__m128i x)
+        {
+            if constexpr (p == 256)
+                return x; // Если p=256, ничего делать не надо
+
+            // Константа Барретта: m = floor(2^16 / p)
+            const __m128i m = _mm_set1_epi16(static_cast<short>((1u << 16) / p));
+            const __m128i p_vec = _mm_set1_epi16(static_cast<short>(p));
+
+            // q = (x * m) >> 16
+            __m128i q = _mm_mulhi_epu16(x, m);
+            // res = x - q * p
+            __m128i res = _mm_sub_epi16(x, _mm_mullo_epi16(q, p_vec));
+
+            // Коррекция: if (res >= p) res -= p
+            __m128i mask = _mm_cmpgt_epi16(res, _mm_set1_epi16(static_cast<short>(p - 1)));
+            return _mm_sub_epi16(res, _mm_and_si128(mask, p_vec));
         }
     };
 }
