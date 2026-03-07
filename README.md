@@ -1,4 +1,5 @@
 # lfsr128sum
-Cryptographic LFSR 128-bit hash sum
-* SSE4.1 is used if available
-* Up to 240 MB/s median performance @ 4.3 Ghz CPU @ 4MB buffer.
+
+128-битный хэш, основанный на работе нескольких LFSR регистров.
+
+Производительность ~145 МБ/с.
