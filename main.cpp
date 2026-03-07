@@ -56,7 +56,9 @@ int main(int argc, char *argv[])
     try
     {
 #ifdef _WIN32
+        // Устанавливаем кодировку UTF-8 для вывода в консоль
         SetConsoleOutputCP(CP_UTF8);
+        SetConsoleCP(CP_UTF8);
 #endif
 
         if (argc < 2)

@@ -1,11 +1,24 @@
 cmake_minimum_required(VERSION 3.15)
+
+# 1. Включаем политику для управления рантаймом MSVC
+cmake_policy(SET CMP0091 NEW)
+
 project(lfsr128sum CXX)
 
-# 1. Базовые настройки языка
+# 2. Базовые настройки языка
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 2. ОПРЕДЕЛЕНИЕ ЦЕЛИ (Сначала создаем исполняемый файл)
+# 3. ВКЛЮЧАЕМ СТАТИЧЕСКУЮ ЛИНКОВКУ (/MT и /MTd)
+# Это избавит от необходимости таскать за собой VCRUNTIME140.dll
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# 4. Настройка UTF-8 для консоли (чтобы кириллица работала везде)
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
+# 5. ОПРЕДЕЛЕНИЕ ЦЕЛИ (Сначала создаем исполняемый файл)
 # Включаем все файлы исходников и заголовков
 add_executable(lfsr128sum 
     main.cpp 
@@ -13,7 +26,24 @@ add_executable(lfsr128sum
     tests.h
 )
 
-# 3. НАСТРОЙКА ФЛАГОВ SIMD
+
+include(CheckCXXSourceRuns)
+
+# Проверка поддержки AVX2 на текущем процессоре
+set(AVX2_CODE "
+#include <immintrin.h>
+int main() {
+    __m256i a = _mm256_setzero_si256();
+    return 0;
+}")
+
+check_cxx_source_runs("${AVX2_CODE}" HAS_AVX2)
+
+if(NOT HAS_AVX2)
+    message(FATAL_ERROR "CPU не поддерживает AVX2. Сборка невозможна, так как проект оптимизирован под этот набор инструкций.")
+endif()
+
+# 6. НАСТРОЙКА ФЛАГОВ SIMD
 if(MSVC)
     # /arch:AVX2 автоматически включает SSE4.2 и ниже. 
     # /Oi включает генерацию внутренних функций (intrinsics).
@@ -26,25 +56,34 @@ else()
     target_compile_definitions(lfsr128sum PRIVATE SIMD_ENABLED=1)
 endif()
 
-# 4. ДОПОЛНИТЕЛЬНЫЕ ОПЦИИ СБОРКИ
+# 7. ДОПОЛНИТЕЛЬНЫЕ ОПЦИИ СБОРКИ
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     # Автозапуск тестов после компиляции в режиме отладки
     add_custom_command(TARGET lfsr128sum POST_BUILD
         COMMAND lfsr128sum --test
         COMMENT ">>> Запуск автоматических тестов (Debug) <<<"
     )
-else()
-    # Максимальная оптимизация для Release
-    if(NOT MSVC)
+else() # Release
+    if(MSVC)
+        # /O2 - скорость, /Ot - приоритет скорости над размером, /GL - оптимизация всей программы
+        target_compile_options(lfsr128sum PRIVATE /O2 /Ot /GL)
+        # /LTCG - генерация кода при линковке (нужна для /GL)
+        set_property(TARGET lfsr128sum APPEND_STRING PROPERTY LINK_FLAGS " /LTCG")
+    else()
         target_compile_options(lfsr128sum PRIVATE -O3 -ffast-math -ftree-vectorize)
     endif()
 endif()
 
-# 5. ТЕСТИРОВАНИЕ (Интеграция с CTest)
+# 8. Чтобы консоль Windows понимала UTF-8 через манифест (опционально, но полезно)
+if(MSVC)
+    set_target_properties(lfsr128sum PROPERTIES LINK_FLAGS "/MANIFEST:EMBED")
+endif()
+
+# 9. ТЕСТИРОВАНИЕ (Интеграция с CTest)
 enable_testing()
 add_test(NAME BaseCoverageTest COMMAND lfsr128sum --test)
 add_test(NAME PerformanceBench COMMAND lfsr128sum --bench)
 
-# 6. БИБЛИОТЕКИ
+# 10. БИБЛИОТЕКИ
 find_package(Threads REQUIRED)
 target_link_libraries(lfsr128sum PRIVATE Threads::Threads)

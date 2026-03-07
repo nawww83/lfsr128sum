@@ -60,12 +60,13 @@ inline void lfsr_hash_benchmark()
     constexpr size_t N = 4 * 1024 * 1024;
     auto v = std::vector<uint8_t>(N);
     std::cout << "Input array of " << N << " bytes is allocated.\n";
-    std::vector<double> perfs{};
+    std::vector<double> perfs;
     {
         // WarmUp
         const auto perf = bench<N>(timer, g, v);
     }
     constexpr size_t M = 128;
+    perfs.reserve(M);
     for (int i = 0; i < M; ++i)
     {
         const auto perf = bench<N>(timer, g, v);
