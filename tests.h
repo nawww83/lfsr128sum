@@ -60,7 +60,7 @@ inline void lfsr_hash_benchmark()
     std::cout << std::flush;
     timer_n::Timer timer;
     lfsr_hash::gens g;
-    constexpr size_t N = 4 * 1024 * 1024;
+    constexpr size_t N = 8 * 8 * 1024 * 1024;
     auto v = std::vector<uint8_t>(N);
     std::cout << "Input array of " << N << " bytes is allocated.\n";
     std::vector<double> perfs;
