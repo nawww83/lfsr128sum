@@ -166,5 +166,4 @@ namespace lfsr_hash
             h1 | (h2 << 32),
             h3 | (h4 << 32)};
     }
-
 }
