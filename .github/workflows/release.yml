@@ -1,0 +1,43 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Срабатывает при пуше тегов v1.0, v2.1.0 и т.д.
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    # Даем права на запись для создания релиза
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        # Генерируем проект в папку build
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build and Package
+        # Собираем и сразу запускаем CPack для создания ZIP
+        run: |
+          cmake --build build --config Release
+          cmake --build build --target package --config Release
+
+      - name: Run Tests
+        # Запускаем ваш самотест перед публикацией
+        # В Windows-окружении путь обычно build/Release/lfsr128sum.exe
+        run: ./build/Release/lfsr128sum.exe --test
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          # Маска для поиска созданного ZIP-архива в папке build
+          files: build/*.zip
+          # Генерировать описание релиза автоматически на основе коммитов
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

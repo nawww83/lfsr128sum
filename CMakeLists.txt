@@ -3,7 +3,20 @@ cmake_minimum_required(VERSION 3.15)
 # 1. Включаем политику для управления рантаймом MSVC
 cmake_policy(SET CMP0091 NEW)
 
-project(lfsr128sum CXX)
+project(
+    lfsr128sum 
+    VERSION 2.1.0 
+    LANGUAGES CXX
+)
+
+# Генерируем реальный .h файл из шаблона во время сборки
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/version.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/version.h"
+)
+
+# В блоке CPack просто используем эту переменную
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 
 # 2. Базовые настройки языка
 set(CMAKE_CXX_STANDARD 20)
@@ -26,6 +39,8 @@ add_executable(lfsr128sum
     tests.h
 )
 
+# Разрешаем компилятору искать заголовок в папке сборки
+target_include_directories(lfsr128sum PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 
 include(CheckCXXSourceRuns)
 
@@ -87,3 +102,24 @@ add_test(NAME PerformanceBench COMMAND lfsr128sum --bench)
 # 10. БИБЛИОТЕКИ
 find_package(Threads REQUIRED)
 target_link_libraries(lfsr128sum PRIVATE Threads::Threads)
+
+# 11. УПАКОВКА (CPack)
+# Указываем, что исполняемый файл идет в корень архива
+install(TARGETS lfsr128sum DESTINATION .)
+
+# Добавляем текстовые файлы в корень архива
+# Если файлы лежат в подпапках, укажите путь, например: docs/readme.md
+install(FILES 
+    "${CMAKE_CURRENT_SOURCE_DIR}/README.md" 
+    "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" # или лицензия.txt
+    DESTINATION .
+)
+
+# Настройки архива
+set(CPACK_PACKAGE_NAME "lfsr128sum")
+set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-win64-avx2")
+set(CPACK_PACKAGE_VENDOR "Anatoly Novikov")
+set(CPACK_GENERATOR "ZIP")
+set(CPACK_STRIP_FILES TRUE) 
+
+include(CPack)

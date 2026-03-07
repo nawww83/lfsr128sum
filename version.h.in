@@ -1,0 +1,10 @@
+#ifndef VERSION_H
+#define VERSION_H
+
+// Эти переменные CMake заменит на реальные значения из project()
+#define PROJECT_VERSION_MAJOR "@PROJECT_VERSION_MAJOR@"
+#define PROJECT_VERSION_MINOR "@PROJECT_VERSION_MINOR@"
+#define PROJECT_VERSION_PATCH "@PROJECT_VERSION_PATCH@"
+#define PROJECT_VERSION       "@PROJECT_VERSION@"
+
+#endif // VERSION_H

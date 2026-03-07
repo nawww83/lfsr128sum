@@ -11,6 +11,8 @@ bin/
 *.obj
 *.o
 
+version.h
+
 # --- Visual Studio Code ---
 .vscode/*
 !.vscode/settings.json

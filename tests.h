@@ -8,8 +8,11 @@
 #include <vector>
 #include <algorithm>
 #include "lfsr_hash.h"
-
+#include "version.h"
 #include <chrono>
+
+// В CMakeLists.txt мы получили эти макросы из шаблона .in
+#define VERSION_INT (PROJECT_VERSION_MAJOR_INT * 10000 + PROJECT_VERSION_MINOR_INT * 100 + PROJECT_VERSION_PATCH_INT)
 
 namespace timer_n
 {
@@ -78,7 +81,7 @@ inline void lfsr_hash_benchmark()
     std::cout << " All Ok! Completed.\n";
 }
 
-inline void check_hash(const std::string &version)
+inline void check_hash()
 {
     lfsr_hash::gens g;
     constexpr int M = 64;
@@ -90,8 +93,9 @@ inline void check_hash(const std::string &version)
     g.reset();
     g.add_salt({8, 8, 8});
     lfsr_hash::u128 hash = lfsr_hash::hash128(g, std::as_bytes(std::span(buff)));
-    if (version == "v2.1-simd") {
-        assert((hash == lfsr_hash::u128{4355867762154551223ull, 17377028108451251887ull})); // Фиксация алгоритма, v.2.1.
+    if (std::stoi(PROJECT_VERSION_MAJOR) >= 2 && std::stoi(PROJECT_VERSION_MINOR) >= 1)
+    {
+        assert((hash == lfsr_hash::u128{4355867762154551223ull, 17377028108451251887ull})); // Фиксация алгоритма на версии v.2.1.0
         std::cout << "Golden hash: " << hash.first << ", " << hash.second << ", Ok\n";
     }
 }

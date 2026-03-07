@@ -1,0 +1,12 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "📦 Собрать ZIP-архив",
+            "type": "shell",
+            "command": "cmake --build build --target package --config Release",
+            "group": "build",
+            "problemMatcher": []
+        }
+    ]
+}

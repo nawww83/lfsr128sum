@@ -8,10 +8,10 @@
 #include <windows.h>
 #endif
 
+#include "version.h"
+
 #include "lfsr_hash.h"
 #include "tests.h"
-
-static constexpr auto VERSION = "v2.1-simd";
 
 namespace fs = std::filesystem;
 using namespace lfsr_hash;
@@ -63,7 +63,7 @@ int main(int argc, char *argv[])
 
         if (argc < 2)
         {
-            std::cout << "lfsr128sum " << VERSION << "\n"; // <-- Вывод здесь
+            std::cout << "lfsr128sum " << PROJECT_VERSION << "\n";
             std::cout << "Использование: lfsr128sum <путь_к_файлу> [опции]\n\n"
                       << "Опции:\n"
                       << "  --test    Запустить тесты корректности и покрытия\n"
@@ -74,15 +74,14 @@ int main(int argc, char *argv[])
 
         const std::string arg = argv[1];
 
-        if (arg == "--version" || arg == "-v")
-        {
-            std::cout << "lfsr128sum version " << VERSION << std::endl;
+        if (arg == "--version" || arg == "-v") {
+            std::cout << "lfsr128sum version " << PROJECT_VERSION << std::endl;
             return 0;
         }
 
         if (arg == "--test")
         {
-            check_hash(VERSION);
+            check_hash();
             test_simd_consistency();
             test_block_simd_consistency();
             test_lfsr_hash_coverage_1();
