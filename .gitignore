@@ -1,4 +1,49 @@
-*.user
+# --- Бинарные файлы и сборка ---
 build/
-.vscode/
+out/
+bin/
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+*.pdb
+*.obj
+*.o
 
+# --- Visual Studio Code ---
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# --- Visual Studio (MSVC) ---
+.vs/
+x64/
+x86/
+Debug/
+Release/
+*.user
+*.suo
+*.sln
+*.vcxproj
+*.filters
+
+# --- CMake ---
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# --- Логи и временные файлы ---
+*.log
+*.tmp
+*.bak
+.DS_Store
