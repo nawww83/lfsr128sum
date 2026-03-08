@@ -14,6 +14,7 @@
 #include "version.h"
 
 #include "lfsr_hash.h"
+#include "progress_bar.h"
 #include "tests.h"
 
 namespace fs = std::filesystem;
@@ -21,7 +22,6 @@ using namespace lfsr_hash;
 
 constexpr size_t chunkSize = 8 * 1024 * 1024;
 constexpr size_t blockSize = 64 * 1024;
-static std::vector<uint8_t> buffer(chunkSize);
 static gens generator;
 
 // Проверяем все возможные макросы компиляторов
@@ -127,20 +127,14 @@ int main(int argc, char *argv[])
         FILE* f = fopen(p.string().c_str(), "rb");
 
         // 2. Выделяем память под системный буфер (8 МБ)
-        // Это "пред-буфер", из которого fread будет забирать данные в ваши bufferA/bufferB
+        // Это "пред-буфер", из которого fread будет забирать данные в bufferA/bufferB
         std::vector<char> system_cache(8 * 1024 * 1024); 
 
         // 3. Устанавливаем полноблочную буферизацию (_IOFBF)
-        if (f) {
+        if (f)
             setvbuf(f, system_cache.data(), _IOFBF, system_cache.size());
-        }
         else
             throw std::runtime_error("Не удалось открыть файл.");
-
-
-        // std::ifstream fin(p, std::ifstream::binary);
-        // if (!fin)
-            // throw std::runtime_error("Не удалось открыть файл.");
 
         // Два буфера для двойной буферизации
         auto bufferA_sptr = std::unique_ptr<uint8_t[], decltype(aligned_deleter)>(ALLOC_ALIGNED(chunkSize), aligned_deleter);
@@ -167,12 +161,12 @@ int main(int argc, char *argv[])
         std::thread consumer([&]()
                              {
         while (true) {
-            can_process.acquire(); // Ждем, пока Producer наполнит какой-то буфер
+            can_process.acquire(); // Ждем, пока Producer наполнит какой-то из буферов.
 
-            // Проверка на выход, если данных больше нет
+            // Выход, если данных больше нет
             if (done && bytesInA == 0 && bytesInB == 0) break;
 
-            // Определяем, какой буфер готов (сначала проверяем A, потом B)
+            // Определяем, какой из буферов готов (сначала проверяем A, потом B)
             bool processingA = (bytesInA > 0);
             auto& currentBuf = processingA ? bufferA : bufferB;
             size_t currentBytes = processingA ? bytesInA : bytesInB;
@@ -184,7 +178,7 @@ int main(int argc, char *argv[])
                 generator.add_salt(file_salt);
             }
 
-            // Ваш цикл хеширования блоками
+            // Цикл хеширования блоками
             const size_t nBlocks = (currentLast ? (currentBytes + blockSize - 1) / blockSize : chunkSize / blockSize);
             for (size_t i = 0; i < nBlocks; ++i) {
                 auto data = currentBuf.subspan(i * blockSize, blockSize);
@@ -200,6 +194,7 @@ int main(int argc, char *argv[])
             if (currentLast) break;
         } });
 
+        ProgressBar bar(total_size, "Hashing ");
         // Главный поток — Чтение (Producer)
         while (!feof(f))
         {
@@ -209,10 +204,7 @@ int main(int argc, char *argv[])
             bool targetA = (bytesInA == 0);
             auto &targetBuf = targetA ? bufferA : bufferB;
 
-            size_t read = fread(targetBuf.data(), 1, chunkSize, f); // Быстрый C-style ввод
-            // fin.read(reinterpret_cast<char *>(targetBuf.data()), chunkSize);
-            // size_t read = static_cast<size_t>(fin.gcount());
-
+            size_t read = fread(targetBuf.data(), 1, chunkSize, f);
             if (read > 0)
             {
                 if (targetA)
@@ -227,13 +219,7 @@ int main(int argc, char *argv[])
                 }
 
                 processed += read;
-
-                // Вывод прогресса (опционально, можно добавить условие частоты)
-                if (total_size > chunkSize)
-                {
-                    int pct = static_cast<int>((processed * 100) / total_size);
-                    std::cerr << "\rProgress: " << pct << "%" << std::flush;
-                }
+                bar.update(processed);
 
                 can_process.release(); // Сигнализируем Consumer'у, что данные готовы
                 if (read < chunkSize)
@@ -250,9 +236,7 @@ int main(int argc, char *argv[])
         if (consumer.joinable())
             consumer.join();
 
-        // Очистка строки прогресса
-        if (total_size > chunkSize)
-            std::cerr << "\r" << std::string(30, ' ') << "\r";
+        bar.finish();
 
         fclose(f);
 

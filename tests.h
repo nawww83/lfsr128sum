@@ -2,47 +2,23 @@
 
 #include <cmath>
 #include <iostream>
-#include <set>
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <array>
 #include <algorithm>
 #include "lfsr_hash.h"
+#include "timer.h"
 #include "version.h"
-#include <chrono>
 
 // В CMakeLists.txt мы получили эти макросы из шаблона .in
 #define VERSION_INT (PROJECT_VERSION_MAJOR_INT * 10000 + PROJECT_VERSION_MINOR_INT * 100 + PROJECT_VERSION_PATCH_INT)
-
-namespace timer_n
-{
-
-    class Timer
-    {
-        std::chrono::time_point<std::chrono::steady_clock> mBegin;
-
-    public:
-        Timer() : mBegin(std::chrono::steady_clock::now()) {};
-        double elapsed_ns()
-        {
-            auto mEnd = std::chrono::steady_clock::now();
-            return std::chrono::duration_cast<std::chrono::nanoseconds>(mEnd - mBegin).count();
-        }
-        void reset()
-        {
-            mBegin = std::chrono::steady_clock::now();
-        }
-    };
-
-}
 
 template <size_t N>
 double bench(timer_n::Timer &timer, lfsr_hash::gens &g, const std::vector<uint8_t> &data)
 {
     if (data.size() > N)
-    {
         return (std::numeric_limits<double>::infinity)();
-    }
     timer.reset();
     g.reset();
     g.add_salt({1, 2, 3});
@@ -50,7 +26,7 @@ double bench(timer_n::Timer &timer, lfsr_hash::gens &g, const std::vector<uint8_
     const auto dt = timer.elapsed_ns();
     const double perf = (1000. * N) / dt;
     if (result.first == 0xDEADBEEF)
-        std::cout << " "; // Маловероятное условие, мешающее удалению кода
+        std::cout << " "; // Маловероятное условие, мешающее удалению кода хэширования.
     return perf;
 }
 
@@ -103,16 +79,14 @@ inline void check_hash()
 inline void test_simd_consistency()
 {
     lfsr_hash::gens generator;
-    generator.reset(); // Установит исходное состояние {1,0,0,0, 1,0,0,0}
+    generator.reset();
 
     // Сохраняем начальное состояние для сравнения
     auto s0 = generator.g_251x4.get_state();
 
-    // Используем явные типы и приведение
     const uint16_t val_input_1 = static_cast<uint16_t>(123 % 251);
     const uint16_t val_input_2 = static_cast<uint16_t>(200 % 241);
 
-    // Шаг вперед и назад
     generator.g_251x4.next_simd(val_input_1, val_input_2);
     generator.g_251x4.back_simd(val_input_1, val_input_2);
 

@@ -16,14 +16,14 @@ namespace lfsr_hash
     using u64 = lfsr8::u64;
     using u128 = std::pair<lfsr8::u64, lfsr8::u64>;
 
-    static constexpr STATE K1 = {3, 2, 2, 0, 9, 1, 0, 4}; // p = 251
+    static constexpr STATE K1 = {3, 2, 2, 0, 9, 1, 0, 4}; // p = 251; коэффициенты, дающие максимальный период.
     static constexpr STATE K2 = {7, 0, 4, 3, 7, 3, 2, 0}; // p = 241
 
     struct salt
     {
-        int q;
-        u16 s0;
-        u16 s1;
+        int q; // Количество тактов, применяемое к спаренному генератору.
+        u16 s0; // Константный вход первого генератора.
+        u16 s1; // -//- второго генератора.
     };
 
     static constexpr salt S0{7, 2, 3};
@@ -32,10 +32,10 @@ namespace lfsr_hash
     static constexpr salt S3{29, 9, 5};
     static constexpr salt S4{37, 2, 13};
 
-    static_assert(S0.q >= 4); // enough saturation, m = 4
+    static_assert(S0.q >= 4); // Минимально достаточное насыщение, m = 4
     static_assert(S1.q >= 4);
 
-    static_assert(S2.q >= 6 * 4); // long distance, m = 4
+    static_assert(S2.q >= 6 * 4); // Насыщение с "запасом", m = 4
     static_assert(S3.q >= 6 * 4);
     static_assert(S4.q >= 6 * 4);
 
@@ -43,17 +43,31 @@ namespace lfsr_hash
 
     struct gens
     {
-        LFSR251x4 g_251x4;
-        LFSR241x4 g_241x4;
+        LFSR251x4 g_251x4; // Два спаренных генератора с периодами T1, T2: НОД(T1, T2) = min(p1, p2) -1
+        LFSR241x4 g_241x4; // Простые числа p1, p2 подобраны так, чтобы минимизировать НОД.
 
     public:
+        /**
+         * @brief Конструктор по умолчанию.
+         */
         constexpr gens() : g_251x4(K1),
                            g_241x4(K2) {}
+        
+        /**
+        * @brief Сбросить генераторы.
+        * @details Устанавливается единичное состояние.
+        */
         void reset()
         {
             g_251x4.set_unit_state();
             g_241x4.set_unit_state();
         }
+
+        /**
+         * @brief Добавить "соль". Проще говоря, по быстрому перевести генераторы в некоторое другое состояние,
+         * не коррелированное с текущим.
+         * @details Используется быстрое возведение в степень, т.к. кол-во тактов может быть большим.
+         */
         void add_salt(salt S)
         {
             g_251x4.power_by(S.q);
@@ -62,8 +76,16 @@ namespace lfsr_hash
             g_241x4.next(S.s1);
         }
 
+        /**
+         * @brief Обработать входные байты с помощью генераторов.
+         */
         void process_input(std::span<const std::byte> input);
 
+        /**
+         * @brief Сформировать 32-битный хеш исходя из текущих состояний генераторов.
+         * @details Используется XOR состояний генераторов с некоторой (пока что фиксированной) маской.
+         * Два спаренных генератора дают 4 состояния [x1, x2, x3, x4], размер которых 32 бита.
+         */
         auto form_hash32()
         {
             auto st1 = g_251x4.get_state();
@@ -116,6 +138,9 @@ namespace lfsr_hash
         g_241x4.next_simd(x, x);
     }
 
+    /**
+     * @brief Получить 32-битный хеш для входных байтов.
+     */
     inline u32 hash32(gens &g, std::span<const std::byte> input)
     {
         const auto n = input.size();
@@ -128,6 +153,9 @@ namespace lfsr_hash
         return h;
     }
 
+    /**
+     * @brief Получить 64-битный хеш для входных байтов.
+     */
     inline u64 hash64(gens &g, std::span<const std::byte> input)
     {
         const auto n = input.size();
@@ -140,6 +168,9 @@ namespace lfsr_hash
         return (h1 << 32) | h2;
     }
 
+    /**
+     * @brief Получить 128-битный хеш для входных байтов.
+     */
     inline u128 hash128(gens &g, std::span<const std::byte> input)
     {
         const auto n = input.size();
