@@ -5,7 +5,7 @@ cmake_policy(SET CMP0091 NEW)
 
 project(
     lfsr128sum 
-    VERSION 2.1.0 
+    VERSION 2.0.0 
     LANGUAGES CXX
 )
 
@@ -34,9 +34,7 @@ endif()
 # 5. ОПРЕДЕЛЕНИЕ ЦЕЛИ (Сначала создаем исполняемый файл)
 # Включаем все файлы исходников и заголовков
 add_executable(lfsr128sum 
-    main.cpp 
-    lfsr_hash.h 
-    tests.h
+    main.cpp
 )
 
 # Разрешаем компилятору искать заголовок в папке сборки

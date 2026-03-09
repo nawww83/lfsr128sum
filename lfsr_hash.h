@@ -7,7 +7,6 @@
 
 namespace lfsr_hash
 {
-
     using LFSR251x4 = lfsr8::LFSR_paired_2x4<251>;
     using LFSR241x4 = lfsr8::LFSR_paired_2x4<241>;
     using STATE = lfsr8::u16x8;
@@ -16,8 +15,8 @@ namespace lfsr_hash
     using u64 = lfsr8::u64;
     using u128 = std::pair<lfsr8::u64, lfsr8::u64>;
 
-    static constexpr STATE K1 = {3, 2, 2, 0, 9, 1, 0, 4}; // p = 251; коэффициенты, дающие максимальный период.
-    static constexpr STATE K2 = {7, 0, 4, 3, 7, 3, 2, 0}; // p = 241
+    static constexpr STATE K1 = {3, 2, 2, 0,   3, 250, 10, 240}; // p = 251.
+    static constexpr STATE K2 = {7, 0, 4, 3,   3,   2,  9, 228}; // p = 241.
 
     struct salt
     {
@@ -43,8 +42,9 @@ namespace lfsr_hash
 
     struct gens
     {
-        LFSR251x4 g_251x4; // Два спаренных генератора с периодами T1, T2: НОД(T1, T2) = min(p1, p2) -1
-        LFSR241x4 g_241x4; // Простые числа p1, p2 подобраны так, чтобы минимизировать НОД.
+        LFSR251x4 g_251x4; // Два спаренных генератора с периодами T1 = p1^4 - 1, T2 = p1^3 - 1: НОД(T1, T2) = p1 - 1.
+        LFSR241x4 g_241x4; // Два спаренных генератора с периодами T1 = p2^4 - 1, T2 = p2^3 - 1: НОД(T1, T2) = p2 - 1.
+        // Простые числа p1, p2 подобраны так, чтобы минимизировать НОД, но и стараться не выходить за пределы байта.
 
     public:
         /**
@@ -70,10 +70,10 @@ namespace lfsr_hash
          */
         void add_salt(salt S)
         {
-            g_251x4.power_by(S.q);
-            g_241x4.power_by(S.q);
             g_251x4.next(S.s0);
             g_241x4.next(S.s1);
+            g_251x4.power_by(S.q);
+            g_241x4.power_by(S.q);
         }
 
         /**
@@ -163,7 +163,8 @@ namespace lfsr_hash
         g.process_input(input);
         g.add_salt(S3);
         u64 h1 = g.form_hash32();
-        g.add_salt(((n % 2) == 0) ? S1 : S2);
+        g.add_salt(S2); // Нужна достаточная соль, чтобы удалиться от текущего состояния.
+        g.add_salt(S4);
         u64 h2 = g.form_hash32();
         return (h1 << 32) | h2;
     }
@@ -176,23 +177,20 @@ namespace lfsr_hash
         const auto n = input.size();
         g.add_salt(S1);
         g.add_salt(S0);
-        g.add_salt(S4);
         g.process_input(input);
-        g.add_salt(S0);
         g.add_salt(S1);
         g.add_salt(S3);
 
         u64 h1 = g.form_hash32();
-        g.add_salt(S3);
+        g.add_salt(S3); // Нужна достаточная соль, чтобы удалиться от текущего состояния.
         g.add_salt(S4);
         u64 h2 = g.form_hash32();
-        g.add_salt(S2);
-        g.add_salt(S1);
-        u64 h3 = g.form_hash32();
+        g.add_salt(S2); // Нужна достаточная соль, чтобы удалиться от текущего состояния.
         g.add_salt(S4);
-        g.add_salt(S0);
+        u64 h3 = g.form_hash32();
+        g.add_salt(S4); // Нужна достаточная соль, чтобы удалиться от текущего состояния.
+        g.add_salt(S3);
         u64 h4 = g.form_hash32();
-
         return {
             h1 | (h2 << 32),
             h3 | (h4 << 32)};

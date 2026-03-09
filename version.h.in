@@ -1,10 +1,20 @@
 #ifndef VERSION_H
 #define VERSION_H
 
-// Эти переменные CMake заменит на реальные значения из project()
+// Строковые версии для вывода в консоль/логи
 #define PROJECT_VERSION_MAJOR "@PROJECT_VERSION_MAJOR@"
 #define PROJECT_VERSION_MINOR "@PROJECT_VERSION_MINOR@"
 #define PROJECT_VERSION_PATCH "@PROJECT_VERSION_PATCH@"
 #define PROJECT_VERSION       "@PROJECT_VERSION@"
+
+// Числовые макросы для логики в коде (if constexpr)
+#define PROJECT_VERSION_MAJOR_INT @PROJECT_VERSION_MAJOR@
+#define PROJECT_VERSION_MINOR_INT @PROJECT_VERSION_MINOR@
+#define PROJECT_VERSION_PATCH_INT @PROJECT_VERSION_PATCH@
+
+// Итоговый целочисленный идентификатор (например, 20100)
+#define VERSION_INT (PROJECT_VERSION_MAJOR_INT * 10000 + \
+                     PROJECT_VERSION_MINOR_INT * 100 + \
+                     PROJECT_VERSION_PATCH_INT)
 
 #endif // VERSION_H

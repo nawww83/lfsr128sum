@@ -3,8 +3,9 @@
 #include <fstream>
 #include <vector>
 #include <filesystem>
-#include <chrono>
 #include <thread>
+#include <span>
+#include <memory>
 #include <semaphore>
 
 #ifdef _WIN32
@@ -15,7 +16,7 @@
 
 #include "lfsr_hash.h"
 #include "progress_bar.h"
-#include "tests.h"
+#include "lfsr_test_suite.hpp"
 
 namespace fs = std::filesystem;
 using namespace lfsr_hash;
@@ -49,12 +50,14 @@ static gens generator;
 #include <cstdlib>
 
 #ifdef _WIN32
-    #include <malloc.h>
-    auto aligned_deleter = [](uint8_t* p) { _aligned_free(p); };
-    #define ALLOC_ALIGNED(s) static_cast<uint8_t*>(_aligned_malloc(s, 64))
+#include <malloc.h>
+auto aligned_deleter = [](uint8_t *p)
+{ _aligned_free(p); };
+#define ALLOC_ALIGNED(s) static_cast<uint8_t *>(_aligned_malloc(s, 64))
 #else
-    auto aligned_deleter = [](uint8_t* p) { std::free(p); };
-    #define ALLOC_ALIGNED(s) static_cast<uint8_t*>(std::aligned_alloc(64, s))
+auto aligned_deleter = [](uint8_t *p)
+{ std::free(p); };
+#define ALLOC_ALIGNED(s) static_cast<uint8_t *>(std::aligned_alloc(64, s))
 #endif
 
 [[maybe_unused]] void print_simd_info()
@@ -97,16 +100,14 @@ int main(int argc, char *argv[])
 
         if (arg == "--test")
         {
-            check_hash();
-            test_simd_consistency();
-            test_block_simd_consistency();
-            test_lfsr_hash_coverage_1();
-            test_lfsr_hash_coverage_2();
+            LFSRTestSuite suite;
+            suite.run_all();
             return 0;
         }
         if (arg == "--bench")
         {
-            lfsr_hash_benchmark();
+            LFSRTestSuite suite;
+            suite.run_lfsr_benchmark();
             return 0;
         }
 
@@ -124,11 +125,11 @@ int main(int argc, char *argv[])
             static_cast<uint16_t>((total_size >> 16) ^ (total_size >> 32))};
 
         // 1. Открываем файл (C-style для скорости)
-        FILE* f = fopen(p.string().c_str(), "rb");
+        FILE *f = fopen(p.string().c_str(), "rb");
 
         // 2. Выделяем память под системный буфер (8 МБ)
         // Это "пред-буфер", из которого fread будет забирать данные в bufferA/bufferB
-        std::vector<char> system_cache(8 * 1024 * 1024); 
+        std::vector<char> system_cache(8 * 1024 * 1024);
 
         // 3. Устанавливаем полноблочную буферизацию (_IOFBF)
         if (f)

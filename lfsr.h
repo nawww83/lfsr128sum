@@ -418,14 +418,6 @@ namespace lfsr8
         static_assert(p < 256);
         static_assert(p > 1);
 
-        // Маска, которая сохраняет все, кроме ячеек 0 и 4 (куда придет feedback)
-        // Порядок байт в epi8 (от 15 до 0):
-        // [S7, S7, S6, S6, S5, S5, 0, 0, S3, S3, S2, S2, S1, S1, 0, 0]
-        const __m128i mask_independent = _mm_setr_epi8(
-            0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // LFSR 1 (0-я ячейка занулена)
-            0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff  // LFSR 2 (4-я ячейка занулена)
-        );
-
     public:
         /**
          * @brief Конструктор с параметром.
@@ -433,7 +425,11 @@ namespace lfsr8
          * порождающих полиномов степени 4 в поле GF(p^4).
          * @details Коэффициент при x^m равен 1 и не используется в явном виде.
          */
-        constexpr LFSR_paired_2x4(u16x8 K) : m_K(K) { m_calculate_inverse_of_K(); };
+        constexpr LFSR_paired_2x4(u16x8 K) : m_K(K)
+        {
+            m_calculate_inverse_of_K();
+            precompute_matrices();
+        };
 
         void set_state(const u16x8 &state)
         {
@@ -479,10 +475,15 @@ namespace lfsr8
             m_state[4] = (inp2 + (u32)m_v7 * (u32)m_K[4]) % (u16)p;
         }
 
-        void next_simd(u16 inp1, u16 inp2)
+#if defined(_MSC_VER)
+        __forceinline
+#else
+        [[gnu::always_inline]] inline
+#endif
+            void next_simd(u16 inp1, u16 inp2)
         {
-            __m128i state = _mm_loadu_si128((const __m128i *)m_state.data());
-            __m128i K_vec = _mm_loadu_si128((const __m128i *)m_K.data());
+            __m128i state = _mm_load_si128((const __m128i *)m_state.data());
+            __m128i K_vec = _mm_load_si128((const __m128i *)m_K.data());
 
             // 1. Сдвиг влево (state[i] = state[i-1]):
             // В Little-endian памяти сдвиг к старшим индексам — это slli_si128
@@ -505,7 +506,7 @@ namespace lfsr8
             __m128i prod = _mm_mullo_epi16(v_vec, K_vec);
             __m128i res = _mm_add_epi16(shifted, _mm_add_epi16(prod, input_vec));
 
-            _mm_storeu_si128((__m128i *)m_state.data(), simd_mod_p(res));
+            _mm_store_si128((__m128i *)m_state.data(), simd_mod_p(res));
         }
 
         /**
@@ -526,112 +527,183 @@ namespace lfsr8
             m_state[7] = m_v_2;
         }
 
+#if defined(_MSC_VER)
+        __forceinline
+#else
+        [[gnu::always_inline]] inline
+#endif
         void back_simd(u16 inp1, u16 inp2)
         {
-            const u32 up = static_cast<u32>(p);
+            const u32 up = p;
+            // 1. Восстанавливаем v1, v2 (обратная связь)
+            // Важно: (state[0] - inp1 + p) % p — гарантируем отсутствие отрицательных чисел
+            const u16 v1 = static_cast<u16>((u32)m_inv_K[0] * (m_state[0] + up - (inp1 % up)) % up);
+            const u16 v2 = static_cast<u16>((u32)m_inv_K[4] * (m_state[4] + up - (inp2 % up)) % up);
 
-            // 1. Восстановление v1, v2
-            const u16 v1 = static_cast<u16>((static_cast<u32>(m_inv_K[0]) *
-                                             (static_cast<u32>(m_state[0]) + up - (static_cast<u32>(inp1) % up))) %
-                                            up);
-            const u16 v2 = static_cast<u16>((static_cast<u32>(m_inv_K[4]) *
-                                             (static_cast<u32>(m_state[4]) + up - (static_cast<u32>(inp2) % up))) %
-                                            up);
+            __m128i v_vec = _mm_setr_epi16(v1, v1, v1, v1, v2, v2, v2, v2);
 
-            __m128i v_vec = _mm_set_epi16(v2, v2, v2, v2, v1, v1, v1, v1);
-            __m128i state = _mm_loadu_si128((const __m128i *)m_state.data());
-            __m128i K_vec = _mm_loadu_si128((const __m128i *)m_K.data());
+            // 2. Загружаем K и сдвигаем его: нам нужны K[1], K[2], K[3] и K[5], K[6], K[7]
+            // В цикле i=0..2: state[i] использует K[i+1]
+            __m128i K_vec = _mm_load_si128((const __m128i *)m_K.data());
+            __m128i K_plus_1 = _mm_srli_si128(K_vec, 2); // Сдвиг вправо на 1 элемент (2 байта)
 
-            // 2. Сдвиг вправо (state[i] = state[i+1])
-            __m128i shifted = _mm_srli_si128(state, 2);
+            // 3. Загружаем state и сдвигаем: state[i+1]
+            __m128i state = _mm_load_si128((const __m128i *)m_state.data());
+            __m128i state_plus_1 = _mm_srli_si128(state, 2);
 
-            // 3. Изоляция: зануляем ячейки 3 и 7
-            const __m128i back_mask = _mm_setr_epi8(
-                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0,
-                0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0);
-            shifted = _mm_and_si128(shifted, back_mask);
+            // 4. Вычисление: (state[i+1] - v * K[i+1] + p*p) % p
+            // Так как p < 256, v*K < 65536, mullo_epi16 здесь безопасен (без знакового переполнения)
+            __m128i prod = _mm_mullo_epi16(v_vec, K_plus_1);
+            __m128i prod_mod = simd_mod_p(prod);
 
-            // 4. Вычитание
-            __m128i prod_mod = simd_mod_p(_mm_mullo_epi16(v_vec, K_vec));
+            // (state[i+1] + p - prod_mod) % p
             __m128i p_vec = _mm_set1_epi16(static_cast<short>(p));
+            __m128i diff = _mm_add_epi16(state_plus_1, _mm_sub_epi16(p_vec, prod_mod));
+            __m128i res = simd_mod_p(diff);
 
-            // (shifted + p - prod_mod) % p
-            __m128i res = _mm_sub_epi16(_mm_add_epi16(shifted, p_vec), prod_mod);
-            __m128i next_state = simd_mod_p(res);
+            // 5. Маскируем и сохраняем
+            // Нам нужно обновить только индексы 0,1,2 и 4,5,6.
+            // Индексы 3 и 7 мы запишем отдельно.
+            _mm_store_si128((__m128i *)m_state.data(), res);
 
-            _mm_storeu_si128((__m128i *)m_state.data(), next_state);
-
-            // 5. Фиксируем v1/v2 в концах блоков
+            // 6. Финальная вставка v1 и v2 (те самые "новые" значения, пришедшие с конца)
             m_state[3] = v1;
             m_state[7] = v2;
         }
+
+        // void next_simd_block(__m128i input_4_symbols_each) {
+        //     // input_4_symbols_each должен содержать:
+        //     // [inp1_t0, inp1_t1, inp1_t2, inp1_t3,  inp2_t0, inp2_t1, inp2_t2, inp2_t3]
+
+        //     __m128i state = _mm_load_si128((const __m128i *)m_state.data());
+
+        //     // 1. Предварительно вычисляем "вклады" каждой старой ячейки в новые.
+        //     // За 4 шага s0, s1, s2, s3 полностью вытесняются и становятся "feedback"
+        //     // для формирования новых s0...s3.
+
+        //     // В векторизованном виде это эффективно делается через
+        //     // умножение вектора состояния на заранее вычисленную матрицу переходов.
+
+        //     // Однако, если p < 256, проще всего сделать 4 итерации внутри,
+        //     // но используя SIMD для параллельной обработки ОБОИХ генераторов сразу.
+
+        //     alignas(16) u16 inps[8];
+        //     _mm_store_si128((__m128i*)inps, input_4_symbols_each);
+
+        //     for(int t = 0; t < 4; ++t) {
+        //         // Вызываем вашу исправленную next_simd,
+        //         // передавая inps[t] (для 1-го) и inps[t+4] (для 2-го)
+        //         next_simd(inps[t], inps[t+4]);
+        //     }
+        // }
 
         void next_simd_block(__m128i input_128)
         {
-            __m128i state = _mm_loadu_si128((const __m128i *)m_state.data());
-            __m128i K_vec = _mm_loadu_si128((const __m128i *)m_K.data());
+            __m128i s = _mm_load_si128((const __m128i *)m_state.data());
 
-            // 1. Сдвиг влево (индексы растут)
-            __m128i shifted = _mm_slli_si128(state, 2);
+            // Бродкаст ячеек состояния (s0..s3 и s4..s7)
+            __m128i bS[4];
+            bS[0] = _mm_shuffle_epi8(s, _mm_setr_epi8(0, 1, 0, 1, 0, 1, 0, 1, 8, 9, 8, 9, 8, 9, 8, 9));
+            bS[1] = _mm_shuffle_epi8(s, _mm_setr_epi8(2, 3, 2, 3, 2, 3, 2, 3, 10, 11, 10, 11, 10, 11, 10, 11));
+            bS[2] = _mm_shuffle_epi8(s, _mm_setr_epi8(4, 5, 4, 5, 4, 5, 4, 5, 12, 13, 12, 13, 12, 13, 12, 13));
+            bS[3] = _mm_shuffle_epi8(s, _mm_setr_epi8(6, 7, 6, 7, 6, 7, 6, 7, 14, 15, 14, 15, 14, 15, 14, 15));
 
-            // 2. Изоляция ячеек 0 и 4
-            const __m128i iso_mask = _mm_setr_epi8(
-                0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
-            shifted = _mm_and_si128(shifted, iso_mask);
+            // Бродкаст входов (inp_t0..t3)
+            __m128i bI[4];
+            bI[0] = _mm_shuffle_epi8(input_128, _mm_setr_epi8(0, 1, 0, 1, 0, 1, 0, 1, 8, 9, 8, 9, 8, 9, 8, 9));
+            bI[1] = _mm_shuffle_epi8(input_128, _mm_setr_epi8(2, 3, 2, 3, 2, 3, 2, 3, 10, 11, 10, 11, 10, 11, 10, 11));
+            bI[2] = _mm_shuffle_epi8(input_128, _mm_setr_epi8(4, 5, 4, 5, 4, 5, 4, 5, 12, 13, 12, 13, 12, 13, 12, 13));
+            bI[3] = _mm_shuffle_epi8(input_128, _mm_setr_epi8(6, 7, 6, 7, 6, 7, 6, 7, 14, 15, 14, 15, 14, 15, 14, 15));
 
-            // 3. Feedback v3 и v7
-            __m128i v_vec = _mm_set_epi16(m_state[7], m_state[7], m_state[7], m_state[7],
-                                          m_state[3], m_state[3], m_state[3], m_state[3]);
+            // Накопление результата: S' = sum(Si * Mi) + sum(Ii * Gi)
+            // Т.к. p < 256, сумма 8-ми произведений (8 * 255 * 255 = 520,200) НЕ влезет в u16 (65535).
+            // Поэтому делаем промежуточный модуль после 4-х сложений.
 
-            // 4. Подмешиваем данные через ADD вместо XOR (для обратимости)
-            // Используем предварительный simd_mod_p для input, если байты > p
-            __m128i input_mod = simd_mod_p(input_128);
-            __m128i mixed = _mm_add_epi16(shifted, input_mod);
+            __m128i acc = _mm_mullo_epi16(bS[0], m_matM[0]);
+            acc = _mm_add_epi16(acc, _mm_mullo_epi16(bS[1], m_matM[1]));
+            acc = _mm_add_epi16(acc, _mm_mullo_epi16(bS[2], m_matM[2]));
+            acc = _mm_add_epi16(acc, _mm_mullo_epi16(bS[3], m_matM[3]));
+            acc = simd_mod_p(acc); // Промежуточный модуль, чтобы не переполниться
 
-            // 5. Результат: (Mixed + v*K) % p
-            __m128i prod = _mm_mullo_epi16(v_vec, K_vec);
-            __m128i res = _mm_add_epi16(mixed, prod);
+            acc = _mm_add_epi16(acc, _mm_mullo_epi16(bI[0], m_matG[0]));
+            acc = _mm_add_epi16(acc, _mm_mullo_epi16(bI[1], m_matG[1]));
+            acc = _mm_add_epi16(acc, _mm_mullo_epi16(bI[2], m_matG[2]));
+            acc = _mm_add_epi16(acc, _mm_mullo_epi16(bI[3], m_matG[3]));
 
-            _mm_storeu_si128((__m128i *)m_state.data(), simd_mod_p(res));
+            _mm_store_si128((__m128i *)m_state.data(), simd_mod_p(acc));
         }
 
-        void back_simd_block(__m128i input_128)
-        {
-            const uint32_t up = static_cast<uint32_t>(p);
-            __m128i state = _mm_loadu_si128((const __m128i *)m_state.data());
-            __m128i K_vec = _mm_loadu_si128((const __m128i *)m_K.data());
+        // /**
+        //  * @brief Шаг назад на 4 такта сразу.
+        //  * @param input_block_128 Вектор, содержащий входные символы для 4-х шагов.
+        //  * Формат: [inp1_t0, inp1_t1, inp1_t2, inp1_t3,  inp2_t0, inp2_t1, inp2_t2, inp2_t3]
+        //  */
+        // void back_simd_block(__m128i input_block_128)
+        // {
+        //     // 1. Выгружаем входные данные во временный буфер для доступа в цикле
+        //     alignas(16) u16 inps[8];
+        //     _mm_store_si128(reinterpret_cast<__m128i*>(inps), input_block_128);
 
-            // 1. Восстанавливаем v1 и v2 из текущих ячеек 0 и 4
-            // v = invK * (state - input) % p
-            alignas(16) uint16_t in_arr[8];
-            _mm_storeu_si128((__m128i *)in_arr, input_128);
+        //     // 2. Выполняем 4 шага назад.
+        //     // Важно: идем от последнего входа к первому (t3 -> t2 -> t1 -> t0)
+        //     for (int t = 3; t >= 0; --t)
+        //     {
+        //         // Используем ранее отлаженную back_simd (или её внутреннюю логику)
+        //         // Передаем входные символы для текущего (обратного) шага
+        //         back_simd(inps[t], inps[t + 4]);
+        //     }
+        // }
 
-            const uint16_t v1 = static_cast<uint16_t>((static_cast<uint32_t>(m_inv_K[0]) *
-                                                       (static_cast<uint32_t>(m_state[0]) + up - (in_arr[0] % up))) %
-                                                      up);
-            const uint16_t v2 = static_cast<uint16_t>((static_cast<uint32_t>(m_inv_K[4]) *
-                                                       (static_cast<uint32_t>(m_state[4]) + up - (in_arr[4] % up))) %
-                                                      up);
+#if defined(_MSC_VER)
+__forceinline 
+#else
+[[gnu::always_inline]] inline 
+#endif
+void back_simd_block(__m128i input_128) {
+    __m128i state = _mm_load_si128((const __m128i*)m_state.data());
+    const __m128i K_vec = _mm_load_si128((const __m128i*)m_K.data());
+    const __m128i p_vec = _mm_set1_epi16(static_cast<short>(p));
+    const __m128i K_shifted = _mm_srli_si128(K_vec, 2);
 
-            __m128i v_vec = _mm_set_epi16(v2, v2, v2, v2, v1, v1, v1, v1);
-
-            // 2. Убираем вклад (v*K + input) через вычитание
-            __m128i prod = _mm_mullo_epi16(v_vec, K_vec);
-            __m128i added_val = simd_mod_p(_mm_add_epi16(prod, input_128));
-
-            __m128i p_vec = _mm_set1_epi16(static_cast<short>(p));
-            // (state + p - added_val) % p
-            __m128i shifted_only = simd_mod_p(_mm_sub_epi16(_mm_add_epi16(state, p_vec), added_val));
-
-            // 3. Обратный сдвиг ВПРАВО (srli)
-            __m128i restored = _mm_srli_si128(shifted_only, 2);
-
-            // 4. Записываем и фиксируем хвосты v1/v2
-            _mm_storeu_si128((__m128i *)m_state.data(), restored);
-            m_state[3] = v1;
-            m_state[7] = v2;
+    // Используем макрос или лямбду с шаблонным параметром для индекса
+    auto perform_back_step = [&](__m128i cur_s, const int t_idx, const int t_idx_p4) -> __m128i {
+        // Чтобы обойти ограничение C2057, используем switch или ручной выбор
+        // Но в развернутом коде проще всего вытащить значения заранее или через if constexpr
+        u16 inp1, inp2;
+        
+        // Ручной выбор индекса (компилятор оптимизирует это в одну инструкцию pextrw)
+        switch(t_idx) {
+            case 0: inp1 = _mm_extract_epi16(input_128, 0); inp2 = _mm_extract_epi16(input_128, 4); break;
+            case 1: inp1 = _mm_extract_epi16(input_128, 1); inp2 = _mm_extract_epi16(input_128, 5); break;
+            case 2: inp1 = _mm_extract_epi16(input_128, 2); inp2 = _mm_extract_epi16(input_128, 6); break;
+            case 3: default: inp1 = _mm_extract_epi16(input_128, 3); inp2 = _mm_extract_epi16(input_128, 7); break;
         }
+
+        u16 s0 = static_cast<u16>(_mm_extract_epi16(cur_s, 0));
+        u16 s4 = static_cast<u16>(_mm_extract_epi16(cur_s, 4));
+
+        u16 v1 = static_cast<u16>((u32)m_inv_K[0] * (s0 + p - (inp1 % p)) % p);
+        u16 v2 = static_cast<u16>((u32)m_inv_K[4] * (s4 + p - (inp2 % p)) % p);
+
+        __m128i v_vec = _mm_setr_epi16(v1, v1, v1, v1, v2, v2, v2, v2);
+        __m128i next_vals = _mm_srli_si128(cur_s, 2); 
+        __m128i prod = simd_mod_p(_mm_mullo_epi16(v_vec, K_shifted));
+        __m128i res = simd_mod_p(_mm_add_epi16(next_vals, _mm_sub_epi16(p_vec, prod)));
+
+        // Вместо blend можно использовать _mm_insert_epi16 (тоже требует константу)
+        // Но blend с константой 0x88 работает отлично
+        __m128i v_insert = _mm_setr_epi16(0, 0, 0, v1, 0, 0, 0, v2);
+        return _mm_blend_epi16(res, v_insert, 0x88);
+    };
+
+    // Разворачиваем шаги вручную, передавая константы
+    state = perform_back_step(state, 3, 7);
+    state = perform_back_step(state, 2, 6);
+    state = perform_back_step(state, 1, 5);
+    state = perform_back_step(state, 0, 4);
+
+    _mm_store_si128((__m128i*)m_state.data(), state);
+}
 
         /**
          * @brief Возвести в квадрат, то есть вычислить состояние (x^s)^2, где
@@ -730,6 +802,11 @@ namespace lfsr8
 
         alignas(16) u16x8 m_inv_K{};
 
+    private:
+        // Матрицы перехода для 4-х шагов (каждая строка — это влияние s_i на все s'_0..3)
+        alignas(16) __m128i m_matM[4]; // Для состояния s0..s3 и s4..s7
+        alignas(16) __m128i m_matG[4]; // Для входов inp_t0..t3
+
         /**
          * @brief Вычисляются обратные (по умножению) коэффициенты.
          */
@@ -757,6 +834,40 @@ namespace lfsr8
             }
             m_inv_K[0] = static_cast<u16>(inverse0);
             m_inv_K[4] = static_cast<u16>(inverse4);
+        }
+
+        void precompute_matrices()
+        {
+            // Для каждой ячейки i от 0 до 3 (считаем один генератор, второй симметричен)
+            for (int i = 0; i < 4; ++i)
+            {
+                // 1. Влияние состояния: ставим 1 в ячейку i, остальные 0, входы 0
+                m_state.fill(0);
+                m_state[i] = 1;     // Для первого LFSR
+                m_state[i + 4] = 1; // Для второго LFSR
+
+                // Прогоняем 4 чистых шага (скалярных)
+                for (int t = 0; t < 4; ++t)
+                {
+                    // Временная имитация next без внешних входов
+                    // (используйте вашу эталонную логику next(0, 0) здесь)
+                    next(0, 0);
+                }
+                // Результат после 4 шагов и есть i-я строка матрицы M
+                m_matM[i] = _mm_loadu_si128((const __m128i *)&m_state[0]);
+            }
+
+            // 2. Влияние входов: подаем 1 на шаге t, в остальное время 0
+            for (int t = 0; t < 4; ++t)
+            {
+                m_state.fill(0);
+                for (int step = 0; step < 4; ++step)
+                {
+                    u16 inp = (step == t) ? 1 : 0;
+                    next(inp, inp);
+                }
+                m_matG[t] = _mm_loadu_si128((const __m128i *)&m_state[0]);
+            }
         }
 
         // Вспомогательная функция для векторизованного (x % p)
