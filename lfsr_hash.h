@@ -15,8 +15,8 @@ namespace lfsr_hash
     using u64 = lfsr8::u64;
     using u128 = std::pair<lfsr8::u64, lfsr8::u64>;
 
-    static constexpr STATE K1 = {3, 2, 2, 0,   3, 250, 10, 240}; // p = 251.
-    static constexpr STATE K2 = {7, 0, 4, 3,   3,   2,  9, 228}; // p = 241.
+    static constexpr STATE K1 = {3, 2, 2, 0, 251-6, 5, 251-3, 5}; // p = 251.
+    static constexpr STATE K2 = {7, 0, 4, 3, 241-7, 5, 1, 2};     // p = 241.
 
     struct salt
     {
@@ -106,16 +106,17 @@ namespace lfsr_hash
     void lfsr_hash::gens::process_input(std::span<const std::byte> input)
     {
         const size_t n = input.size();
+        if (n == 0) return;
         size_t i = 0;
         size_t j = n;
 
         for (; i + 16 <= j; i += 16)
         {
-            // Читаем 16 байт целиком
+            // Читаем 16 байт целиком.
             __m128i data = _mm_loadu_si128((const __m128i *)(input.data() + i));
 
             g_251x4.next_simd_block(data);
-            // Для второго генератора можно использовать тот же блок или инвертированный
+            // Для второго генератора можно использовать инвертированный блок.
             g_241x4.next_simd_block(_mm_xor_si128(data, _mm_set1_epi8(0xFF)));
         }
 
@@ -125,7 +126,7 @@ namespace lfsr_hash
             uint16_t val_r = (i + 1 < j) ? static_cast<uint8_t>(input[j - 1]) : 0;
 
             g_251x4.next_simd(val_l, val_r);
-            g_241x4.next_simd(val_r, val_l);
+            g_241x4.next_simd(~val_r, ~val_l);
 
             i++;
             if (j > i)
@@ -144,8 +145,8 @@ namespace lfsr_hash
     inline u32 hash32(gens &g, std::span<const std::byte> input)
     {
         const auto n = input.size();
-        g.add_salt(S1);
-        g.add_salt(S0);
+        g.add_salt( n % 2 ? S1 : S0 );
+        g.add_salt( n % 2 ? S0 : S1 );
         g.process_input(input);
         g.add_salt(S2);
         g.add_salt(S3);
@@ -159,8 +160,10 @@ namespace lfsr_hash
     inline u64 hash64(gens &g, std::span<const std::byte> input)
     {
         const auto n = input.size();
-        g.add_salt(S1);
+        g.add_salt( n % 2 ? S1 : S0 );
+        g.add_salt( n % 2 ? S0 : S1 );
         g.process_input(input);
+        g.add_salt(S2);
         g.add_salt(S3);
         u64 h1 = g.form_hash32();
         g.add_salt(S2); // Нужна достаточная соль, чтобы удалиться от текущего состояния.
@@ -175,8 +178,8 @@ namespace lfsr_hash
     inline u128 hash128(gens &g, std::span<const std::byte> input)
     {
         const auto n = input.size();
-        g.add_salt(S1);
-        g.add_salt(S0);
+        g.add_salt( n % 2 ? S1 : S0 );
+        g.add_salt( n % 2 ? S0 : S1 );
         g.process_input(input);
         g.add_salt(S1);
         g.add_salt(S3);

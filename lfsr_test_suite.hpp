@@ -28,8 +28,11 @@ class LFSRTestSuite
 
     // Параметры Golden Hash (v.2.1.0)
     static constexpr size_t GOLDEN_M = 64;
-    static constexpr lfsr_hash::u128 GOLDEN_EXPECTED{
-        7422550717811155699ull, 14575468668244991079ull};
+    static constexpr lfsr_hash::u128 GOLDEN_EXPECTED
+    {
+        18372456714240962223ull, 
+        2591334261764529517ull
+    };
 
     void report(std::string_view name, bool ok, std::string_view expected = "", std::string_view actual = "")
     {
@@ -115,7 +118,7 @@ public:
 
         for (int i = 0; i < 8; ++i)
             gen.g_251x4.next_simd(i, i + 1);
-        for (int i = 8-1; i >=0; --i)
+        for (int i = 8 - 1; i >= 0; --i)
             gen.g_251x4.back_simd(i, i + 1);
 
         const auto s_final = gen.g_251x4.get_state();
@@ -156,6 +159,7 @@ public:
         buff.fill(0);
 
         std::unordered_set<HashT> hashes;
+        hashes.reserve(256 + 65536);
 
         // Лямбда просто наполняет множество
         auto fill_hashes = [&](int count, int salt_val)
@@ -230,11 +234,11 @@ public:
                 return std::to_string(h.first) + ", " + std::to_string(h.second);
             };
 
-            report("Golden Hash (v2.1.0 Fixed)", ok, to_str(GOLDEN_EXPECTED), to_str(hash));
+            report("Golden Hash", ok, to_str(GOLDEN_EXPECTED), to_str(hash));
         }
         else
         {
-            report("Golden Hash", true, "", "Skipped (Version < 2.1.0)");
+            report("Golden Hash", true, "", "Skipped");
         }
     }
 };
