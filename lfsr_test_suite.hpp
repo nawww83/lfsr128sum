@@ -30,8 +30,7 @@ class LFSRTestSuite
     static constexpr size_t GOLDEN_M = 64;
     static constexpr lfsr_hash::u128 GOLDEN_EXPECTED
     {
-        18372456714240962223ull, 
-        2591334261764529517ull
+        17892976477579333464ull, 4582246380472290850ull
     };
 
     void report(std::string_view name, bool ok, std::string_view expected = "", std::string_view actual = "")
@@ -139,6 +138,21 @@ public:
         __m128i block = _mm_load_si128(reinterpret_cast<const __m128i *>(raw));
 
         gen.g_251x4.next_simd_block(block);
+        gen.g_251x4.next_simd_block(block);
+        gen.g_251x4.next_simd_block(block);
+        gen.g_251x4.next_simd_block(block);
+        gen.g_251x4.next_simd_block(block);
+        gen.g_251x4.next_simd_block(block);
+        gen.g_251x4.next_simd_block(block);
+        gen.g_251x4.next_simd_block(block);
+
+        gen.g_251x4.back_simd_block(block);
+        gen.g_251x4.back_simd_block(block);
+        gen.g_251x4.back_simd_block(block);
+        gen.g_251x4.back_simd_block(block);
+        gen.g_251x4.back_simd_block(block);
+        gen.g_251x4.back_simd_block(block);
+        gen.g_251x4.back_simd_block(block);
         gen.g_251x4.back_simd_block(block);
 
         const auto s_final = gen.g_251x4.get_state();

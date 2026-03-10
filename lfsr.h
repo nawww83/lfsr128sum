@@ -532,7 +532,7 @@ namespace lfsr8
 #else
         [[gnu::always_inline]] inline
 #endif
-        void back_simd(u16 inp1, u16 inp2)
+            void back_simd(u16 inp1, u16 inp2)
         {
             const u32 up = p;
             // 1. Восстанавливаем v1, v2 (обратная связь)
@@ -571,32 +571,6 @@ namespace lfsr8
             m_state[7] = v2;
         }
 
-        // void next_simd_block(__m128i input_4_symbols_each) {
-        //     // input_4_symbols_each должен содержать:
-        //     // [inp1_t0, inp1_t1, inp1_t2, inp1_t3,  inp2_t0, inp2_t1, inp2_t2, inp2_t3]
-
-        //     __m128i state = _mm_load_si128((const __m128i *)m_state.data());
-
-        //     // 1. Предварительно вычисляем "вклады" каждой старой ячейки в новые.
-        //     // За 4 шага s0, s1, s2, s3 полностью вытесняются и становятся "feedback"
-        //     // для формирования новых s0...s3.
-
-        //     // В векторизованном виде это эффективно делается через
-        //     // умножение вектора состояния на заранее вычисленную матрицу переходов.
-
-        //     // Однако, если p < 256, проще всего сделать 4 итерации внутри,
-        //     // но используя SIMD для параллельной обработки ОБОИХ генераторов сразу.
-
-        //     alignas(16) u16 inps[8];
-        //     _mm_store_si128((__m128i*)inps, input_4_symbols_each);
-
-        //     for(int t = 0; t < 4; ++t) {
-        //         // Вызываем вашу исправленную next_simd,
-        //         // передавая inps[t] (для 1-го) и inps[t+4] (для 2-го)
-        //         next_simd(inps[t], inps[t+4]);
-        //     }
-        // }
-
         void next_simd_block(__m128i input_128)
         {
             __m128i s = _mm_load_si128((const __m128i *)m_state.data());
@@ -616,94 +590,90 @@ namespace lfsr8
             bI[3] = _mm_shuffle_epi8(input_128, _mm_setr_epi8(6, 7, 6, 7, 6, 7, 6, 7, 14, 15, 14, 15, 14, 15, 14, 15));
 
             // Накопление результата: S' = sum(Si * Mi) + sum(Ii * Gi)
-            // Т.к. p < 256, сумма 8-ми произведений (8 * 255 * 255 = 520,200) НЕ влезет в u16 (65535).
-            // Поэтому делаем промежуточный модуль после 4-х сложений.
-
             __m128i acc = _mm_mullo_epi16(bS[0], m_matM[0]);
+            acc = simd_mod_p(acc); // Промежуточный модуль, чтобы не переполниться
             acc = _mm_add_epi16(acc, _mm_mullo_epi16(bS[1], m_matM[1]));
+            acc = simd_mod_p(acc); // Промежуточный модуль, чтобы не переполниться
             acc = _mm_add_epi16(acc, _mm_mullo_epi16(bS[2], m_matM[2]));
+            acc = simd_mod_p(acc); // Промежуточный модуль, чтобы не переполниться
             acc = _mm_add_epi16(acc, _mm_mullo_epi16(bS[3], m_matM[3]));
             acc = simd_mod_p(acc); // Промежуточный модуль, чтобы не переполниться
-
             acc = _mm_add_epi16(acc, _mm_mullo_epi16(bI[0], m_matG[0]));
+            acc = simd_mod_p(acc); // Промежуточный модуль, чтобы не переполниться
             acc = _mm_add_epi16(acc, _mm_mullo_epi16(bI[1], m_matG[1]));
+            acc = simd_mod_p(acc); // Промежуточный модуль, чтобы не переполниться
             acc = _mm_add_epi16(acc, _mm_mullo_epi16(bI[2], m_matG[2]));
+            acc = simd_mod_p(acc); // Промежуточный модуль, чтобы не переполниться
             acc = _mm_add_epi16(acc, _mm_mullo_epi16(bI[3], m_matG[3]));
-
             _mm_store_si128((__m128i *)m_state.data(), simd_mod_p(acc));
         }
 
-        // /**
-        //  * @brief Шаг назад на 4 такта сразу.
-        //  * @param input_block_128 Вектор, содержащий входные символы для 4-х шагов.
-        //  * Формат: [inp1_t0, inp1_t1, inp1_t2, inp1_t3,  inp2_t0, inp2_t1, inp2_t2, inp2_t3]
-        //  */
-        // void back_simd_block(__m128i input_block_128)
-        // {
-        //     // 1. Выгружаем входные данные во временный буфер для доступа в цикле
-        //     alignas(16) u16 inps[8];
-        //     _mm_store_si128(reinterpret_cast<__m128i*>(inps), input_block_128);
-
-        //     // 2. Выполняем 4 шага назад.
-        //     // Важно: идем от последнего входа к первому (t3 -> t2 -> t1 -> t0)
-        //     for (int t = 3; t >= 0; --t)
-        //     {
-        //         // Используем ранее отлаженную back_simd (или её внутреннюю логику)
-        //         // Передаем входные символы для текущего (обратного) шага
-        //         back_simd(inps[t], inps[t + 4]);
-        //     }
-        // }
-
 #if defined(_MSC_VER)
-__forceinline 
+        __forceinline
 #else
-[[gnu::always_inline]] inline 
+        [[gnu::always_inline]] inline
 #endif
-void back_simd_block(__m128i input_128) {
-    __m128i state = _mm_load_si128((const __m128i*)m_state.data());
-    const __m128i K_vec = _mm_load_si128((const __m128i*)m_K.data());
-    const __m128i p_vec = _mm_set1_epi16(static_cast<short>(p));
-    const __m128i K_shifted = _mm_srli_si128(K_vec, 2);
+            void back_simd_block(__m128i input_128)
+        {
+            __m128i state = _mm_load_si128((const __m128i *)m_state.data());
+            const __m128i K_vec = _mm_load_si128((const __m128i *)m_K.data());
+            const __m128i p_vec = _mm_set1_epi16(static_cast<short>(p));
+            const __m128i K_shifted = _mm_srli_si128(K_vec, 2);
 
-    // Используем макрос или лямбду с шаблонным параметром для индекса
-    auto perform_back_step = [&](__m128i cur_s, const int t_idx, const int t_idx_p4) -> __m128i {
-        // Чтобы обойти ограничение C2057, используем switch или ручной выбор
-        // Но в развернутом коде проще всего вытащить значения заранее или через if constexpr
-        u16 inp1, inp2;
-        
-        // Ручной выбор индекса (компилятор оптимизирует это в одну инструкцию pextrw)
-        switch(t_idx) {
-            case 0: inp1 = _mm_extract_epi16(input_128, 0); inp2 = _mm_extract_epi16(input_128, 4); break;
-            case 1: inp1 = _mm_extract_epi16(input_128, 1); inp2 = _mm_extract_epi16(input_128, 5); break;
-            case 2: inp1 = _mm_extract_epi16(input_128, 2); inp2 = _mm_extract_epi16(input_128, 6); break;
-            case 3: default: inp1 = _mm_extract_epi16(input_128, 3); inp2 = _mm_extract_epi16(input_128, 7); break;
+            // Используем макрос или лямбду с шаблонным параметром для индекса
+            auto perform_back_step = [&](__m128i cur_s, const int t_idx, const int t_idx_p4) -> __m128i
+            {
+                // Чтобы обойти ограничение C2057, используем switch или ручной выбор
+                // Но в развернутом коде проще всего вытащить значения заранее или через if constexpr
+                u16 inp1, inp2;
+
+                // Ручной выбор индекса (компилятор оптимизирует это в одну инструкцию pextrw)
+                switch (t_idx)
+                {
+                case 0:
+                    inp1 = _mm_extract_epi16(input_128, 0);
+                    inp2 = _mm_extract_epi16(input_128, 4);
+                    break;
+                case 1:
+                    inp1 = _mm_extract_epi16(input_128, 1);
+                    inp2 = _mm_extract_epi16(input_128, 5);
+                    break;
+                case 2:
+                    inp1 = _mm_extract_epi16(input_128, 2);
+                    inp2 = _mm_extract_epi16(input_128, 6);
+                    break;
+                case 3:
+                default:
+                    inp1 = _mm_extract_epi16(input_128, 3);
+                    inp2 = _mm_extract_epi16(input_128, 7);
+                    break;
+                }
+
+                u16 s0 = static_cast<u16>(_mm_extract_epi16(cur_s, 0));
+                u16 s4 = static_cast<u16>(_mm_extract_epi16(cur_s, 4));
+
+                u16 v1 = static_cast<u16>((u32)m_inv_K[0] * (s0 + p - (inp1 % p)) % p);
+                u16 v2 = static_cast<u16>((u32)m_inv_K[4] * (s4 + p - (inp2 % p)) % p);
+
+                __m128i v_vec = _mm_setr_epi16(v1, v1, v1, v1, v2, v2, v2, v2);
+                __m128i next_vals = _mm_srli_si128(cur_s, 2);
+                __m128i prod = simd_mod_p(_mm_mullo_epi16(v_vec, K_shifted));
+                __m128i res = simd_mod_p(_mm_add_epi16(next_vals, _mm_sub_epi16(p_vec, prod)));
+
+                // Вместо blend можно использовать _mm_insert_epi16 (тоже требует константу)
+                // Но blend с константой 0x88 работает отлично
+                __m128i v_insert = _mm_setr_epi16(0, 0, 0, v1, 0, 0, 0, v2);
+                return _mm_blend_epi16(res, v_insert, 0x88);
+            };
+
+            // Разворачиваем шаги вручную, передавая константы
+            state = perform_back_step(state, 3, 7);
+            state = perform_back_step(state, 2, 6);
+            state = perform_back_step(state, 1, 5);
+            state = perform_back_step(state, 0, 4);
+
+            _mm_store_si128((__m128i *)m_state.data(), state);
         }
-
-        u16 s0 = static_cast<u16>(_mm_extract_epi16(cur_s, 0));
-        u16 s4 = static_cast<u16>(_mm_extract_epi16(cur_s, 4));
-
-        u16 v1 = static_cast<u16>((u32)m_inv_K[0] * (s0 + p - (inp1 % p)) % p);
-        u16 v2 = static_cast<u16>((u32)m_inv_K[4] * (s4 + p - (inp2 % p)) % p);
-
-        __m128i v_vec = _mm_setr_epi16(v1, v1, v1, v1, v2, v2, v2, v2);
-        __m128i next_vals = _mm_srli_si128(cur_s, 2); 
-        __m128i prod = simd_mod_p(_mm_mullo_epi16(v_vec, K_shifted));
-        __m128i res = simd_mod_p(_mm_add_epi16(next_vals, _mm_sub_epi16(p_vec, prod)));
-
-        // Вместо blend можно использовать _mm_insert_epi16 (тоже требует константу)
-        // Но blend с константой 0x88 работает отлично
-        __m128i v_insert = _mm_setr_epi16(0, 0, 0, v1, 0, 0, 0, v2);
-        return _mm_blend_epi16(res, v_insert, 0x88);
-    };
-
-    // Разворачиваем шаги вручную, передавая константы
-    state = perform_back_step(state, 3, 7);
-    state = perform_back_step(state, 2, 6);
-    state = perform_back_step(state, 1, 5);
-    state = perform_back_step(state, 0, 4);
-
-    _mm_store_si128((__m128i*)m_state.data(), state);
-}
 
         /**
          * @brief Возвести в квадрат, то есть вычислить состояние (x^s)^2, где
