@@ -8,7 +8,7 @@
 
 #include "timer.h"
 #include "lfsr_hash.h"
-
+#include "io_utils.h"
 #include "version.h"
 
 // В CMakeLists.txt мы получили эти макросы из шаблона .in
@@ -28,10 +28,8 @@ class LFSRTestSuite
 
     // Параметры Golden Hash (v.2.1.0)
     static constexpr size_t GOLDEN_M = 64;
-    static constexpr lfsr_hash::u128 GOLDEN_EXPECTED
-    {
-        17892976477579333464ull, 4582246380472290850ull
-    };
+    static constexpr lfsr_hash::u128 GOLDEN_EXPECTED{
+        17892976477579333464ull, 4582246380472290850ull};
 
     void report(std::string_view name, bool ok, std::string_view expected = "", std::string_view actual = "")
     {
@@ -212,8 +210,8 @@ public:
     void run_period_check()
     {
         lfsr_hash::gens g;
-        const auto& K1 = lfsr_hash::K1;
-        const auto& K2 = lfsr_hash::K2;
+        const auto &K1 = lfsr_hash::K1;
+        const auto &K2 = lfsr_hash::K2;
         // Правый генератор имеет период T1 = p^(m-1) - 1 (малый период). У него есть "замороженные" состояния c*(K0, K0 + K1, K0 + K1 + K2, 1).
         // c - константа, [0, p-1].
         // Это так, потому что полином g(x) = (x - 1)v(x), где v(x) - полином (m-1)-степени с наибольшим периодом T1.
