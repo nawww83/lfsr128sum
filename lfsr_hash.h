@@ -38,8 +38,6 @@ namespace lfsr_hash
     static_assert(S3.q >= 6 * 4);
     static_assert(S4.q >= 6 * 4);
 
-    io_u::io_utils io;
-
     struct gens
     {
         LFSR251x4 g_251x4; // Два спаренных генератора с периодами T1 = p1^4 - 1, T2 = p1^3 - 1: НОД(T1, T2) = p1 - 1.
@@ -103,7 +101,7 @@ namespace lfsr_hash
         }
     };
 
-    void lfsr_hash::gens::process_input(std::span<const std::byte> input)
+    inline void lfsr_hash::gens::process_input(std::span<const std::byte> input)
     {
         const size_t n = input.size();
         if (n == 0) return;

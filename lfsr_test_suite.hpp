@@ -74,6 +74,8 @@ public:
         run_coverage_test<lfsr8::u32>("32-bit Hash Coverage");
         run_coverage_test<lfsr8::u64>("64-bit Hash Coverage");
 
+        run_period_check();
+
         test_golden_hash();
 
         bool all_ok = (passed == total);
@@ -205,6 +207,29 @@ public:
         std::string actual_str = std::to_string(coverage_pct).substr(0, 5) + "% (" + std::to_string(hashes.size()) + ")";
 
         report(label, ok, std::to_string(total_attempts), actual_str);
+    }
+
+    void run_period_check()
+    {
+        lfsr_hash::gens g;
+        const auto& K1 = lfsr_hash::K1;
+        const auto& K2 = lfsr_hash::K2;
+        // Правый генератор имеет период T1 = p^(m-1) - 1 (малый период). У него есть "замороженные" состояния c*(K0, K0 + K1, K0 + K1 + K2, 1).
+        // c - константа, [0, p-1].
+        // Это так, потому что полином g(x) = (x - 1)v(x), где v(x) - полином (m-1)-степени с наибольшим периодом T1.
+        // Полином (x-1) имеет длину цикла равную единице - он и порождает "замороженные" состояния.
+        // У нас LFSR реализован в форме Галуа. Т.о., мы косвенно тестируем генератор на т.н. малый период.
+        lfsr_hash::STATE lock_up_state1 = {0u, 0u, 0u, 0u, K2[4], (K2[4] + K2[5]) % 241u, (K2[4] + K2[5] + K2[6]) % 241u, 1u};
+        g.g_241x4.set_state(lock_up_state1);
+        g.g_241x4.next();
+        bool ok1 = g.g_241x4.is_state_high(lock_up_state1);
+
+        lfsr_hash::STATE lock_up_state2 = {0u, 0u, 0u, 0u, K1[4], (K1[4] + K1[5]) % 251u, (K1[4] + K1[5] + K1[6]) % 251u, 1u};
+        g.g_251x4.set_state(lock_up_state2);
+        g.g_251x4.next();
+        bool ok2 = g.g_251x4.is_state_high(lock_up_state2);
+        report("Period p^(m-1) test LFSR p = 241", ok1, state_to_string(lock_up_state1), state_to_string(g.g_241x4.get_state()));
+        report("Period p^(m-1) test LFSR p = 251", ok2, state_to_string(lock_up_state2), state_to_string(g.g_251x4.get_state()));
     }
 
     void run_lfsr_benchmark()
