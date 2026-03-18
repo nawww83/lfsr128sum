@@ -7,6 +7,7 @@
 #include <iomanip>
 
 #include "timer.h"
+#include "hardcores.h"
 #include "lfsr_hash.h"
 #include "io_utils.h"
 #include "version.h"
@@ -66,12 +67,12 @@ public:
         std::cout << CYAN << "=== Starting LFSR Test Suite ===" << RESET << "\n\n";
 
         test_scalar_and_simd_equivalency();
-        test_scalar_and_simd_equivalency_overflowed_input();        
-        
+        test_scalar_and_simd_equivalency_overflowed_input();
+
         test_simd_consistency();
         test_block_simd_consistency();
         test_simd_consistency_overflowed_input();
-        test_simd_block_consistency_overflowed_input();        
+        test_simd_block_consistency_overflowed_input();
 
         run_coverage_test<lfsr8::u32>("32-bit Hash Coverage");
         run_coverage_test<lfsr8::u64>("64-bit Hash Coverage");
@@ -149,18 +150,18 @@ public:
         alignas(16) uint8_t raw[16];
         for (int i = 0; i < 16; ++i)
             raw[i] = 255 - i;
-        __m128i block = _mm_load_si128((__m128i *)raw);        
+        __m128i block = _mm_load_si128((__m128i *)raw);
 
         alignas(16) uint16_t vals[8];
         _mm_store_si128((__m128i *)vals, block);
         for (int i = 0; i < 4; ++i)
             g_scalar.g_251x4.next(vals[i], vals[i + 4]);
-        for (int i = 4-1; i >= 0; --i)
+        for (int i = 4 - 1; i >= 0; --i)
             g_scalar.g_251x4.back(vals[i], vals[i + 4]);
 
         for (int i = 0; i < 4; ++i)
             g_simd.g_251x4.next_simd(vals[i], vals[i + 4]);
-        for (int i = 4-1; i >= 0; --i)
+        for (int i = 4 - 1; i >= 0; --i)
             g_simd.g_251x4.back_simd(vals[i], vals[i + 4]);
 
         auto s_simd = g_simd.g_251x4.get_state();
@@ -190,7 +191,7 @@ public:
         _mm_store_si128((__m128i *)vals, block);
         for (int i = 0; i < 4; ++i)
             g_scalar.g_251x4.next(vals[i], vals[i + 4]);
-        for (int i = 4-1; i >= 0; --i)
+        for (int i = 4 - 1; i >= 0; --i)
             g_scalar.g_251x4.back(vals[i], vals[i + 4]);
 
         auto s_simd = g_simd.g_251x4.get_state();
@@ -325,21 +326,23 @@ public:
 
     void run_lfsr_benchmark()
     {
+        hardcores::bind_to_core(1); // Стабилизация показаний.
         constexpr size_t N = 8 * 1024 * 1024;
         lfsr_hash::gens g;
-        std::vector<uint8_t> v(N, 0xAA);
+        static std::vector<uint8_t> v(N, 0xAA);
+
+        // Прогрев кэша.
+        lfsr_hash::hash128(g, std::as_bytes(std::span(v)));
+
         timer_n::Timer timer;
 
         g.reset();
         g.add_salt({1, 2, 3});
         auto result = lfsr_hash::hash128(g, std::as_bytes(std::span(v)));
+        hardcores::doNotOptimizeAway(result);
         const auto dt_ns = timer.elapsed_ns();
 
         double mb_s = (static_cast<double>(N) / (1024.0 * 1024.0)) / (dt_ns / 1e9);
-
-        if (result.first == 0xDEADBEEF) [[unlikely]]
-            std::cout << " ";
-
         report("128-bit Performance", true, "", std::to_string((int)mb_s) + " MB/s");
     }
 
