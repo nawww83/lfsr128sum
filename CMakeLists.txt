@@ -50,7 +50,14 @@ int main() {
     return 0;
 }")
 
+# 1. Временно добавляем флаг для компилятора Clang/GCC
+set(SAFE_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -mavx2")
+
 check_cxx_source_runs("${AVX2_CODE}" HAS_AVX2)
+
+# 2. Возвращаем флаги обратно
+set(CMAKE_REQUIRED_FLAGS "${SAFE_CMAKE_REQUIRED_FLAGS}")
 
 if(NOT HAS_AVX2)
     message(FATAL_ERROR "CPU не поддерживает AVX2. Сборка невозможна, так как проект оптимизирован под этот набор инструкций.")

@@ -66,8 +66,12 @@ public:
         std::cout << CYAN << "=== Starting LFSR Test Suite ===" << RESET << "\n\n";
 
         test_scalar_and_simd_equivalency();
+        test_scalar_and_simd_equivalency_overflowed_input();        
+        
         test_simd_consistency();
         test_block_simd_consistency();
+        test_simd_consistency_overflowed_input();
+        test_simd_block_consistency_overflowed_input();        
 
         run_coverage_test<lfsr8::u32>("32-bit Hash Coverage");
         run_coverage_test<lfsr8::u64>("64-bit Hash Coverage");
@@ -105,6 +109,95 @@ public:
         bool ok = (s_simd == s_scalar);
 
         report("Scalar vs SIMD Equivalency", ok,
+               state_to_string(s_scalar),
+               state_to_string(s_simd));
+    }
+
+    void test_scalar_and_simd_equivalency_overflowed_input()
+    {
+        lfsr_hash::gens g_simd, g_scalar;
+        g_simd.reset();
+        g_scalar.reset();
+
+        alignas(16) uint8_t raw[16];
+        for (int i = 0; i < 16; ++i)
+            raw[i] = 255 - i;
+        __m128i block = _mm_load_si128((__m128i *)raw);
+
+        g_simd.g_251x4.next_simd_block(block);
+
+        alignas(16) uint16_t vals[8];
+        _mm_store_si128((__m128i *)vals, block);
+        for (int i = 0; i < 4; ++i)
+            g_scalar.g_251x4.next(vals[i], vals[i + 4]);
+
+        auto s_simd = g_simd.g_251x4.get_state();
+        auto s_scalar = g_scalar.g_251x4.get_state();
+        bool ok = (s_simd == s_scalar);
+
+        report("Scalar vs SIMD Equivalency for overflowed input", ok,
+               state_to_string(s_scalar),
+               state_to_string(s_simd));
+    }
+
+    void test_simd_consistency_overflowed_input()
+    {
+        lfsr_hash::gens g_simd, g_scalar;
+        g_simd.reset();
+        g_scalar.reset();
+
+        alignas(16) uint8_t raw[16];
+        for (int i = 0; i < 16; ++i)
+            raw[i] = 255 - i;
+        __m128i block = _mm_load_si128((__m128i *)raw);        
+
+        alignas(16) uint16_t vals[8];
+        _mm_store_si128((__m128i *)vals, block);
+        for (int i = 0; i < 4; ++i)
+            g_scalar.g_251x4.next(vals[i], vals[i + 4]);
+        for (int i = 4-1; i >= 0; --i)
+            g_scalar.g_251x4.back(vals[i], vals[i + 4]);
+
+        for (int i = 0; i < 4; ++i)
+            g_simd.g_251x4.next_simd(vals[i], vals[i + 4]);
+        for (int i = 4-1; i >= 0; --i)
+            g_simd.g_251x4.back_simd(vals[i], vals[i + 4]);
+
+        auto s_simd = g_simd.g_251x4.get_state();
+        auto s_scalar = g_scalar.g_251x4.get_state();
+        bool ok = (s_simd == s_scalar) && (s_simd == lfsr8::u16x8{1, 0, 0, 0, 1, 0, 0, 0});
+
+        report("SIMD Next/Back Consistency for overflowed input", ok,
+               state_to_string(s_scalar),
+               state_to_string(s_simd));
+    }
+
+    void test_simd_block_consistency_overflowed_input()
+    {
+        lfsr_hash::gens g_simd, g_scalar;
+        g_simd.reset();
+        g_scalar.reset();
+
+        alignas(16) uint8_t raw[16];
+        for (int i = 0; i < 16; ++i)
+            raw[i] = 255 - i;
+        __m128i block = _mm_load_si128((__m128i *)raw);
+
+        g_simd.g_251x4.next_simd_block(block);
+        g_simd.g_251x4.back_simd_block(block);
+
+        alignas(16) uint16_t vals[8];
+        _mm_store_si128((__m128i *)vals, block);
+        for (int i = 0; i < 4; ++i)
+            g_scalar.g_251x4.next(vals[i], vals[i + 4]);
+        for (int i = 4-1; i >= 0; --i)
+            g_scalar.g_251x4.back(vals[i], vals[i + 4]);
+
+        auto s_simd = g_simd.g_251x4.get_state();
+        auto s_scalar = g_scalar.g_251x4.get_state();
+        bool ok = (s_simd == s_scalar) && (s_simd == lfsr8::u16x8{1, 0, 0, 0, 1, 0, 0, 0});
+
+        report("Block SIMD Consistency for overflowed input", ok,
                state_to_string(s_scalar),
                state_to_string(s_simd));
     }

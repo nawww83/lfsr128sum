@@ -442,15 +442,16 @@ namespace lfsr8
          */
         void next(u16 inp1, u16 inp2)
         {
+            const u32 up = p;
             u16 m_v3 = m_state[3];
             u16 m_v7 = m_state[7];
             for (int i = 7; i > 4; i--)
             {
-                m_state[i] = ((u32)m_state[i - 1] + (u32)m_v7 * m_K[i]) % (u32)p;
-                m_state[i - 4] = ((u32)m_state[i - 1 - 4] + (u32)m_v3 * m_K[i - 4]) % (u32)p;
+                m_state[i - 0] = ((u32)m_state[i - 1 - 0] + (u32)m_v7 * m_K[i - 0]) % up;
+                m_state[i - 4] = ((u32)m_state[i - 1 - 4] + (u32)m_v3 * m_K[i - 4]) % up;
             }
-            m_state[0] = (inp1 + (u32)m_v3 * m_K[0]) % (u32)p;
-            m_state[4] = (inp2 + (u32)m_v7 * m_K[4]) % (u32)p;
+            m_state[0] = (inp1 + (u32)m_v3 * m_K[0]) % up;
+            m_state[4] = (inp2 + (u32)m_v7 * m_K[4]) % up;
         }
 
 #if defined(_MSC_VER)
@@ -494,12 +495,15 @@ namespace lfsr8
          */
         void back(u16 inp1, u16 inp2)
         {
-            const u16 m_v_1 = ((u32)m_inv_K[0] * ((u32)m_state[0] - inp1 + p)) % (u32)p;
-            const u16 m_v_2 = ((u32)m_inv_K[4] * ((u32)m_state[4] - inp2 + p)) % (u32)p;
+            const u32 up = p;
+            const u16 m_v_1 = ((u32)m_inv_K[0] * ((u32)m_state[0] - (inp1 % up) + up)) % up;
+            const u16 m_v_2 = ((u32)m_inv_K[4] * ((u32)m_state[4] - (inp2 % up) + up)) % up;
             for (int i = 0; i < 3; i++)
             {
-                m_state[i] = ((u32)m_state[i + 1] - (u32)m_v_1 * m_K[i + 1] + p * p) % (u32)p;
-                m_state[i + 4] = ((u32)m_state[i + 5] - (u32)m_v_2 * m_K[i + 5] + p * p) % (u32)p;
+                u32 a = ((u32)m_v_1 * m_K[i + 1]) % up;
+                u32 b = ((u32)m_v_2 * m_K[i + 5]) % up;
+                m_state[i + 0] = ((u32)m_state[i + 1] - a + up) % up;
+                m_state[i + 4] = ((u32)m_state[i + 5] - b + up) % up;                
             }
             m_state[3] = m_v_1;
             m_state[7] = m_v_2;
@@ -630,8 +634,9 @@ namespace lfsr8
                 u16 s0 = static_cast<u16>(_mm_extract_epi16(cur_s, 0));
                 u16 s4 = static_cast<u16>(_mm_extract_epi16(cur_s, 4));
 
-                u16 v1 = static_cast<u16>((u32)m_inv_K[0] * (s0 + p - (inp1 % p)) % p);
-                u16 v2 = static_cast<u16>((u32)m_inv_K[4] * (s4 + p - (inp2 % p)) % p);
+                const u32 up = p;
+                u16 v1 = static_cast<u16>((u32)m_inv_K[0] * (s0 + up - (inp1 % up)) % up);
+                u16 v2 = static_cast<u16>((u32)m_inv_K[4] * (s4 + up - (inp2 % up)) % up);
 
                 __m128i v_vec = _mm_setr_epi16(v1, v1, v1, v1, v2, v2, v2, v2);
                 __m128i next_vals = _mm_srli_si128(cur_s, 2);
