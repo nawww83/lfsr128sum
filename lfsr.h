@@ -427,8 +427,7 @@ namespace lfsr8
 
         /**
          * @brief Сделать шаг вперед (один такт генератора).
-         * @param input Входной символ (должен быть приведен по модулю p!), который одинаково
-         * подается на оба генератора.
+         * @param input Входной символ, который одинаково подается на оба генератора.
          */
         void next(u16 input = 0)
         {
@@ -437,8 +436,8 @@ namespace lfsr8
 
         /**
          * @brief Сделать шаг вперед (один такт генератора).
-         * @param inp1 Входной символ (должен быть приведен по модулю p!) первого генератора.
-         * @param inp2 Входной символ (должен быть приведен по модулю p!) второго генератора.
+         * @param inp1 Входной символ первого генератора.
+         * @param inp2 Входной символ второго генератора.
          */
         void next(u16 inp1, u16 inp2)
         {
@@ -452,6 +451,11 @@ namespace lfsr8
             }
             m_state[0] = (inp1 + (u32)m_v3 * m_K[0]) % up;
             m_state[4] = (inp2 + (u32)m_v7 * m_K[4]) % up;
+        }
+
+        void next_simd(u16 inp)
+        {
+            next_simd(inp, inp);
         }
 
 #if defined(_MSC_VER)
@@ -488,10 +492,15 @@ namespace lfsr8
             _mm_store_si128((__m128i *)m_state.data(), simd_mod_p(res));
         }
 
+        void back(u16 inp)
+        {
+            back(inp, inp);
+        }
+
         /**
          * @brief Сделать шаг назад (один такт генератора). Обратно к next(inp1, inp2).
-         * @param inp1 Входной символ (должен быть приведен по модулю p!) первого генератора.
-         * @param inp2 Входной символ (должен быть приведен по модулю p!) второго генератора.
+         * @param inp1 Входной символ первого генератора.
+         * @param inp2 Входной символ второго генератора.
          */
         void back(u16 inp1, u16 inp2)
         {
@@ -507,6 +516,11 @@ namespace lfsr8
             }
             m_state[3] = m_v_1;
             m_state[7] = m_v_2;
+        }
+
+        void back_simd(u16 inp)
+        {
+            back_simd(inp, inp);
         }
 
 #if defined(_MSC_VER)
@@ -691,10 +705,10 @@ namespace lfsr8
                         continue;
                     if ((i >= 4) || (i < 0))
                         continue;
-                    v1 += ((u32)old_state[i] * (u32)other_ref[j]) % (u16)p;
-                    v2 += ((u32)old_state[i + 4] * (u32)other_ref[j + 4]) % (u16)p;
+                    v1 += ((u32)old_state[i + 0] * other_ref[j + 0]) % (u32)p;
+                    v2 += ((u32)old_state[i + 4] * other_ref[j + 4]) % (u32)p;
                 }
-                next(v1 % (u32)p, v2 % (u32)p);
+                next(v1, v2);
             }
         }
 
@@ -796,7 +810,7 @@ namespace lfsr8
             {
                 // 1. Влияние состояния: ставим 1 в ячейку i, остальные 0, входы 0
                 m_state.fill(0);
-                m_state[i] = 1;     // Для первого LFSR
+                m_state[i + 0] = 1; // Для первого LFSR
                 m_state[i + 4] = 1; // Для второго LFSR
 
                 // Прогоняем 4 чистых шага (скалярных)
