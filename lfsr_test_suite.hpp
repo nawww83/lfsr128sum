@@ -3,8 +3,9 @@
 #include <iostream>
 #include <vector>
 #include <string_view>
-#include <unordered_set>
 #include <iomanip>
+#include <algorithm>
+#include <format> // C++20
 
 #include "timer.h"
 #include "hardcores.h"
@@ -266,37 +267,45 @@ public:
         std::array<uint8_t, M> buff;
         buff.fill(0);
 
-        std::unordered_set<HashT> hashes;
-        hashes.reserve(256 + 65536);
+        const size_t total_attempts = 256 + 65536;
 
-        // Лямбда просто наполняет множество
+        std::vector<HashT> hashes;
+        hashes.reserve(total_attempts);
+
         auto fill_hashes = [&](int count, int salt_val)
         {
+            auto data_view = std::as_bytes(std::span(buff));
+            g.reset();
+            g.add_salt({salt_val % M, (uint8_t)salt_val, (uint8_t)salt_val});
+            const auto& ref_state_241 = g.g_241x4.get_state();
+            const auto& ref_state_251 = g.g_251x4.get_state();
+
             for (int i = 0; i < count; ++i)
             {
                 io.copy_to_mem(i, buff);
-                g.reset();
-                g.add_salt({salt_val % M, (uint8_t)salt_val, (uint8_t)salt_val});
-
+                g.g_241x4.set_state(ref_state_241);
+                g.g_251x4.set_state(ref_state_251);
                 if constexpr (sizeof(HashT) == 4)
-                    hashes.insert(lfsr_hash::hash32(g, std::as_bytes(std::span(buff))));
+                    hashes.push_back(lfsr_hash::hash32(g, data_view));
                 else
-                    hashes.insert(lfsr_hash::hash64(g, std::as_bytes(std::span(buff))));
+                    hashes.push_back(lfsr_hash::hash64(g, data_view));
             }
         };
 
-        // Выполняем два прохода (накопительно)
         fill_hashes(256, 1);
         fill_hashes(65536, 2);
 
-        // Итоговый расчет покрытия
-        const size_t total_attempts = 256 + 65536;
-        const double coverage_pct = (static_cast<double>(hashes.size()) * 100.0) / total_attempts;
+        // Считаем уникальные элементы через сортировку
+        std::sort(hashes.begin(), hashes.end());
+        auto last = std::unique(hashes.begin(), hashes.end());
+        size_t unique_count = std::distance(hashes.begin(), last);
 
-        bool ok = (hashes.size() == total_attempts);
+        // Форматируем результат через std::format (C++20)
+        double coverage_pct = (static_cast<double>(unique_count) * 100.0) / total_attempts;
+        bool ok = (unique_count == total_attempts);
 
-        // Формируем строку результата: "100.00% (65792/65792)"
-        std::string actual_str = std::to_string(coverage_pct).substr(0, 5) + "% (" + std::to_string(hashes.size()) + ")";
+        // Точный вывод: "100.00% (65792)"
+        std::string actual_str = std::format("{:.2f}% ({})", coverage_pct, unique_count);
 
         report(label, ok, std::to_string(total_attempts), actual_str);
     }

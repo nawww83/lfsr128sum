@@ -708,7 +708,7 @@ namespace lfsr8
                     v1 += ((u32)old_state[i + 0] * other_ref[j + 0]) % (u32)p;
                     v2 += ((u32)old_state[i + 4] * other_ref[j + 4]) % (u32)p;
                 }
-                next(v1, v2);
+                next_simd(v1, v2);
             }
         }
 

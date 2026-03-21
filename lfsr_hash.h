@@ -65,10 +65,10 @@ namespace lfsr_hash
          * не коррелированное с текущим.
          * @details Используется быстрое возведение в степень, т.к. кол-во тактов может быть большим.
          */
-        void add_salt(salt S)
+        void add_salt(const salt& S)
         {
-            g_251x4.next(S.s0);
-            g_241x4.next(S.s1);
+            g_251x4.next_simd(S.s0);
+            g_241x4.next_simd(S.s1);
             g_251x4.power_by(S.q);
             g_241x4.power_by(S.q);
         }
