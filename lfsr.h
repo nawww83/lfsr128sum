@@ -512,7 +512,7 @@ namespace lfsr8
                 u32 a = ((u32)m_v_1 * m_K[i + 1]) % up;
                 u32 b = ((u32)m_v_2 * m_K[i + 5]) % up;
                 m_state[i + 0] = ((u32)m_state[i + 1] - a + up) % up;
-                m_state[i + 4] = ((u32)m_state[i + 5] - b + up) % up;                
+                m_state[i + 4] = ((u32)m_state[i + 5] - b + up) % up;
             }
             m_state[3] = m_v_1;
             m_state[7] = m_v_2;
@@ -682,33 +682,36 @@ namespace lfsr8
             mult_by(m_state);
         }
 
-        /**
-         * @brief Умножить текущее состояние x^s на некоторое другое состояние x^t.
-         * Итоговое состояние генератора становится равным x^(s+t).
-         * @param other Другое состояние x^t.
-         */
         void mult_by(const u16x8 &other)
         {
-            u16x8 old_state = m_state;
-            // Если не делать условную ссылку, то mult_by(m_state) даст неправильный результат, потому что
-            // next(v) меняет m_state.
-            const auto &other_ref = other == m_state ? old_state : other;
+            // 1. Делаем локальную копию ТЕКУЩЕГО состояния
+            u16x8 a_copy = m_state;
+
+            // 2. Решаем проблему square(): если нам передали ссылку на самого себя,
+            // используем нашу копию a_copy. Если передали другой объект — используем его напрямую.
+            const u16x8 &b_ref = (&other == &m_state) ? a_copy : other;
+
+            // 3. Теперь можно безопасно обнулять m_state для накопления результата
             m_state.fill(0);
-            for (int power = 2 * 4 - 2; power >= 0; --power)
+
+            for (int power = 6; power >= 0; --power)
             {
-                u32 v1 = 0;
-                u32 v2 = 0;
-                for (int i = 0; i < power + 1; ++i)
+                uint32_t v1 = 0;
+                uint32_t v2 = 0;
+
+                int i_start = (std::max)(0, power - 3);
+                int i_end = (std::min)(power, 3);
+
+                for (int i = i_start; i <= i_end; ++i)
                 {
-                    const int j = power - i;
-                    if ((j >= 4) || (j < 0))
-                        continue;
-                    if ((i >= 4) || (i < 0))
-                        continue;
-                    v1 += ((u32)old_state[i + 0] * other_ref[j + 0]) % (u32)p;
-                    v2 += ((u32)old_state[i + 4] * other_ref[j + 4]) % (u32)p;
+                    // Используем a_copy (множимое) и b_ref (множитель)
+                    v1 += (uint32_t)a_copy[i + 0] * b_ref[power - i + 0];
+                    v2 += (uint32_t)a_copy[i + 4] * b_ref[power - i + 4];
                 }
-                next_simd(v1, v2);
+
+                // Выполняем шаг LFSR (редукция полинома)
+                next_simd(static_cast<u16>(v1 % p),
+                          static_cast<u16>(v2 % p));
             }
         }
 

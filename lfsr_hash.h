@@ -65,7 +65,7 @@ namespace lfsr_hash
          * не коррелированное с текущим.
          * @details Используется быстрое возведение в степень, т.к. кол-во тактов может быть большим.
          */
-        void add_salt(const salt& S)
+        inline void add_salt(const salt& S)
         {
             g_251x4.next_simd(S.s0);
             g_241x4.next_simd(S.s1);
@@ -83,7 +83,7 @@ namespace lfsr_hash
          * @details Используется XOR состояний генераторов с некоторой (пока что фиксированной) маской.
          * Два спаренных генератора дают 4 состояния [x1, x2, x3, x4], размер которых 32 бита.
          */
-        auto form_hash32()
+        inline auto form_hash32()
         {
             auto st1 = g_251x4.get_state();
             auto st2 = g_241x4.get_state();
