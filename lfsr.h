@@ -15,7 +15,6 @@
 #include <cassert>
 #include <array>
 #include <type_traits>
-#include <cmath>
 #include <concepts>
 #include <limits>
 
@@ -30,7 +29,6 @@
 
 namespace lfsr8
 {
-
     using u64 = uint64_t;
     using u32 = uint32_t;
     using u16 = uint16_t;

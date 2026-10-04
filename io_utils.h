@@ -8,14 +8,12 @@
 
 namespace io_u
 {
-
     /**
      * @brief Утилиты для безопасного чтения и записи примитивных типов в байтовые буферы.
      * Поддерживает автоматическую обработку порядка байт (Endianness) и любые контейнеры.
      */
     struct io_utils
     {
-
         /**
          * @brief Записывает целое число в буфер.
          * При необходимости меняет порядок байт на Little Endian (стандарт для большинства протоколов).
@@ -29,7 +27,7 @@ namespace io_u
          */
         template <std::integral T, typename B, std::size_t Extent>
             requires(sizeof(B) == 1)
-        static void copy_to_mem(T x, std::span<B, Extent> buffer)
+        inline void copy_to_mem(T x, std::span<B, Extent> buffer)
         {
             if (buffer.size() < sizeof(T))
                 return;
@@ -51,7 +49,7 @@ namespace io_u
          */
         template <std::integral T, typename B, std::size_t Extent>
             requires(sizeof(B) == 1)
-        static void read_mem(T &x, std::span<const B, Extent> buffer)
+        inline void read_mem(T &x, std::span<const B, Extent> buffer)
         {
             if (buffer.size() < sizeof(T))
                 return;
@@ -67,13 +65,13 @@ namespace io_u
          * @brief Вспомогательная перегрузка для удобного вызова с контейнерами (массивы, векторы).
          */
         template <std::integral T, typename Container>
-        static void copy_to_mem(T x, Container &c)
+        inline void copy_to_mem(T x, Container &c)
         {
             copy_to_mem(x, std::span{c});
         }
 
         template <std::integral T, typename Container>
-        static void read_mem(T &x, const Container &c)
+        inline void read_mem(T &x, const Container &c)
         {
             read_mem(x, std::span{c});
         }
@@ -83,7 +81,7 @@ namespace io_u
          * @brief Реверс байтов для целых чисел. Аналог std::byteswap из C++23.
          */
         template <std::integral T>
-        static constexpr T swap_bytes(T val) noexcept
+        inline constexpr T swap_bytes(T val) noexcept
         {
             if constexpr (sizeof(T) == 1)
                 return val;

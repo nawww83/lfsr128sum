@@ -9,8 +9,7 @@
 
 namespace hardcores
 {
-
-    void bind_to_core(int core_id)
+    inline void bind_to_core(int core_id)
     {
 #ifdef __linux__
         cpu_set_t cpuset;
@@ -23,7 +22,7 @@ namespace hardcores
     }
 
     template <typename T>
-    void doNotOptimizeAway(const T &value)
+    inline void doNotOptimizeAway(const T &value)
     {
 #if defined(__GNUC__) || defined(__clang__)
         asm volatile("" : : "g"(value) : "memory");

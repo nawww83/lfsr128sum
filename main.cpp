@@ -15,9 +15,6 @@
 #include "lfsr_file_hash.h"
 #include "lfsr_test_suite.hpp"
 
-namespace fs = std::filesystem;
-using namespace lfsr_hash;
-
 // Проверяем все возможные макросы компиляторов
 #if defined(__AVX2__)
 #define SIMD_STATUS "AVX2"
@@ -39,8 +36,6 @@ using namespace lfsr_hash;
 #define CMAKE_FLAG "ОТСУТСТВУЕТ"
 #endif
 
-#include <cstdlib>
-
 [[maybe_unused]] void print_simd_info()
 {
     std::cout << "--- Информация о сборке ---" << std::endl;
@@ -48,6 +43,8 @@ using namespace lfsr_hash;
     std::cout << "Флаг из CMake:    " << CMAKE_FLAG << std::endl;
     std::cout << "---------------------------" << std::endl;
 }
+
+namespace fs = std::filesystem;
 
 static bool verify_checksum_file(const fs::path& checksum_file_path) {
     fs::path absolute_checksum_path = fs::absolute(checksum_file_path);
@@ -143,7 +140,7 @@ static bool verify_checksum_file(const fs::path& checksum_file_path) {
             files_failed++;
             continue;
         }
-        u128 expected_hash = *expected_hash_opt;
+        lfsr_file_hash::u128 expected_hash = *expected_hash_opt;
 
         // 4. Строим абсолютный путь к целевому файлу
         fs::path target_file = fs::absolute(absolute_checksum_path.parent_path() / filename_part);
@@ -156,7 +153,7 @@ static bool verify_checksum_file(const fs::path& checksum_file_path) {
         }
 
         // 5. Проверяем версию и вычисляем реальный хэш файла
-        u128 actual_hash = {0, 0};
+        lfsr_file_hash::u128 actual_hash = {0, 0};
         if (parsed.version == lfsr_file_hash::HASH_VERSION_PREFIX || parsed.version == "legacy") {
             try {
                 // Создаем временный прогресс-бар для одного конкретного файла.
@@ -358,7 +355,7 @@ int main(int argc, char *argv[])
 
             try {
                 // Вызываем оптимизированную функцию хэширования
-                u128 total_hash = lfsr_file_hash::calculate_file_hash128(file_path, bar, overall_processed_bytes);
+                lfsr_file_hash::u128 total_hash = lfsr_file_hash::calculate_file_hash128(file_path, bar, overall_processed_bytes);
 
                 // Накапливаем строковый результат хэша в буфер
                 all_results << lfsr_file_hash::HASH_VERSION_PREFIX
