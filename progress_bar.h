@@ -53,10 +53,17 @@ public:
             
             // Текущая средняя скорость
             double current_speed = (elapsed > 0) ? (processed / elapsed) : 0;
-            
-            // Формула EMA: сглаживаем текущее значение на основе предыдущего
-            if (smoothed_speed == 0) smoothed_speed = current_speed;
-            else smoothed_speed = (alpha * current_speed) + (1.0 - alpha) * smoothed_speed;
+
+            // Пропускаем самый первый мизерный шаг времени, чтобы избежать деления на микросекунды
+            if (elapsed < 0.05) return;
+
+            if (smoothed_speed == 0) {
+                // Инициализируем более адекватным значением текущей средней скорости
+                smoothed_speed = current_speed;
+            } else {
+                // Если шаг по времени нормальный, сглаживаем как обычно
+                smoothed_speed = (alpha * current_speed) + (1.0 - alpha) * smoothed_speed;
+            }
 
             double eta = (smoothed_speed > 0) ? (static_cast<double>(total_size - processed) / smoothed_speed) : 0;
 

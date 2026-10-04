@@ -3,7 +3,7 @@
 #include <iostream>
 #include <iomanip>
 #include <sstream>
-
+#include <fstream>
 #include <string_view>
 
 #ifdef _WIN32
@@ -215,16 +215,18 @@ int main(int argc, char *argv[])
     try
     {
 #ifdef _WIN32
+        // Принудительно устанавливаем UTF-8 для корректного вывода в Windows Terminal
         SetConsoleOutputCP(CP_UTF8);
         SetConsoleCP(CP_UTF8);
 #endif
 
+        // 1. Проверяем наличие аргументов
         if (argc < 2)
         {
             std::cout << "lfsr128sum " << PROJECT_VERSION << "\n";
             std::cout << "Использование:\n"
                       << "  lfsr128sum <файл1> [файл2 ...] [опции]   Вычислить хэш одного или нескольких файлов\n"
-                      << "  lfsr128sum -c | --check <файл>     Проверить файлы по контрольным суммам\n"
+                      << "  lfsr128sum -c | --check <файл>            Проверить файлы по контрольным суммам\n\n"
                       << "Опции:\n"
                       << "  -o, --output <файл>     Записать результат напрямую в указанный файл\n"
                       << "  --test                  Запустить тесты корректности и покрытия\n"
@@ -233,6 +235,7 @@ int main(int argc, char *argv[])
             return 0;
         }
 
+        // Выносим первый аргумент для проверки глобальных сервисных флагов
         const std::string arg = argv[1];
 
         if (arg == "--version" || arg == "-v") {
@@ -250,7 +253,7 @@ int main(int argc, char *argv[])
             return 0;
         }
 
-        // РЕЖИМ ПРОВЕРКИ ФАЙЛА СУММ
+        // РЕЖИМ ПРОВЕРКИ ФАЙЛА КОНТРОЛЬНЫХ СУММ
         if (arg == "--check" || arg == "-c") {
             if (argc < 3) {
                 std::cerr << "Ошибка: Не указан файл с контрольными суммами.\n";
@@ -262,31 +265,73 @@ int main(int argc, char *argv[])
         }
 
         // ====================================================================
-        // РЕЖИМ РАСЧЕТА ХЭШЕЙ ДЛЯ МНОЖЕСТВА ФАЙЛОВ (С ИСПРАВЛЕННЫМ PROGRESSBAR)
+        // РЕЖИМ РАСЧЕТА ХЭШЕЙ ДЛЯ МНОЖЕСТВА ФАЙЛОВ
         // ====================================================================
 
         std::vector<fs::path> input_files;
         std::string output_file;
 
-        // Разбираем аргументы: ищем файлы и флаг -o / --output
+        // ШАГ 1: Сканируем аргументы и находим только файл вывода (если он есть)
         for (int i = 1; i < argc; ++i) {
             std::string current_arg = argv[i];
             if (current_arg == "-o" || current_arg == "--output") {
-                if (i + 1 < argc) { output_file = argv[i + 1]; i++; }
-                else { std::cerr << "Ошибка: Не указан файл для записи.\n"; return 1; }
-            } else {
-                input_files.push_back(fs::path(current_arg));
+                if (i + 1 < argc) {
+                    output_file = argv[i + 1];
+                    break; // Файл вывода успешно найден, выходим из первого прохода
+                } else {
+                    std::cerr << "Ошибка: После флага " << current_arg << " не указан файл для записи.\n";
+                    return 1;
+                }
             }
         }
 
-        if (input_files.empty()) {
-            std::cerr << "Ошибка: Не указаны входные файлы.\n"; return 1; }
+        // ШАГ 2: Собираем только входные файлы, пропуская флаг вывода и его значение
+        for (int i = 1; i < argc; ++i) {
+            std::string current_arg = argv[i];
+            if (current_arg == "-o" || current_arg == "--output") {
+                i++; // Пропускаем имя файла вывода
+                continue;
+            }
+            input_files.push_back(fs::path(current_arg));
+        }
 
-        // 1. Предварительный проход: отсекаем невалидные файлы и считаем ОБЩИЙ РАЗМЕР
+        if (input_files.empty()) {
+            std::cerr << "Ошибка: Не указаны входные файлы для расчета хэша.\n";
+            return 1;
+        }
+
+        // ШАГ 3: Жесткая проверка путей на совпадение (Защита от самозатирания)
         std::vector<fs::path> valid_files;
         uint64_t total_bytes_to_process = 0;
 
+        // Принудительно нормализуем выходной путь, приводя его слэши к системному виду Windows
+        fs::path abs_output_path = output_file.empty() ? fs::path() : fs::absolute(fs::path(output_file)).lexically_normal();
+
         for (const auto& file_path : input_files) {
+            fs::path abs_file_path = fs::absolute(file_path).lexically_normal(); // Нормализуем слэши входного пути
+
+            if (!output_file.empty()) {
+                bool is_same_file = false;
+
+                // 1. Проверка по нормализованной строке пути (с учетом исправленных слэшей)
+                if (abs_file_path == abs_output_path) {
+                    is_same_file = true;
+                }
+                // 2. Если файл вывода уже существует, делаем железную проверку через ОС
+                else if (fs::exists(abs_file_path) && fs::exists(abs_output_path)) {
+                    if (fs::equivalent(abs_file_path, abs_output_path)) {
+                        is_same_file = true;
+                    }
+                }
+
+                if (is_same_file) {
+                    std::cerr << "\n\033[31mКритическая ошибка: Выходной файл \"" << output_file
+                              << "\" совпадает с входным файлом \"" << file_path.string() << "\"!\n"
+                              << "Операция полностью заблокирована во избежание уничтожения данных.\033[0m\n";
+                    return 1;
+                }
+            }
+
             if (fs::exists(file_path) && fs::is_regular_file(file_path)) {
                 valid_files.push_back(file_path);
                 total_bytes_to_process += fs::file_size(file_path);
@@ -296,64 +341,68 @@ int main(int argc, char *argv[])
         }
 
         if (valid_files.empty()) {
-            std::cerr << "Ошибка: Нет доступных файлов для расчета хэша.\n"; return 1; }
+            std::cerr << "Ошибка: Нет доступных файлов для расчета хэша.\n";
+            return 1;
+        }
 
-        // 2. Создаем ОДИН общий прогресс-бар на весь объем данных
+        // ШАГ 4: Инициализация сквозного прогресс-бара
         ProgressBar bar(total_bytes_to_process, "Hashing");
         uint64_t overall_processed_bytes = 0;
 
         std::stringstream all_results;
         size_t successful_hashes = 0;
 
-        // 3. Последовательно обрабатываем каждый валидный файл
+        // Обрабатываем каждый валидный файл из пачки
         for (const auto& file_path : valid_files) {
-            // Динамически меняем текст лейбла на имя текущего файла
             bar.set_label("Hashing " + file_path.filename().string());
 
             try {
-                // ВАЖНО: Модифицируем calculate_file_hash128, чтобы она принимала
-                // ссылку на наш общий bar и счетчик уже обработанных байт
+                // Вызываем оптимизированную функцию хэширования
                 u128 total_hash = lfsr_file_hash::calculate_file_hash128(file_path, bar, overall_processed_bytes);
 
-                // Накапливаем хэш-сумму
+                // Накапливаем строковый результат хэша в буфер
                 all_results << lfsr_file_hash::HASH_VERSION_PREFIX
                             << std::hex << std::setw(16) << std::setfill('0') << total_hash.first
                             << std::setw(16) << std::setfill('0') << total_hash.second
                             << std::dec << "  " << file_path.filename().string() << "\n";
 
                 successful_hashes++;
-                // Прибавляем размер завершенного файла к общему счетчику прогресса
                 overall_processed_bytes += fs::file_size(file_path);
             }
             catch (const std::exception &e) {
-                // Если файл упал с ошибкой, всё равно прибавляем его размер, чтобы прогресс-бар не сломался
+                // Если один файл в пачке сломался, сдвигаем прогресс, чтобы шкала не дергалась
                 overall_processed_bytes += fs::file_size(file_path);
             }
         }
 
-        bar.finish(); // Закрываем общий прогресс-бар (перенос строки в stderr)
+        bar.finish(); // Закрываем общий прогресс-бар (перенос каретки)
 
         if (successful_hashes == 0) {
-            std::cerr << "Ошибка: Не удалось рассчитать хэш ни для одного файла.\n"; return 1; }
+            std::cerr << "Ошибка: Не удалось рассчитать хэш ни для одного файла.\n";
+            return 1;
+        }
 
         std::string final_output_str = all_results.str();
 
-        // Записываем результат (в файл или консоль)
+        // ШАГ 5: Запись итогов
         if (!output_file.empty()) {
+            // Режим ios::binary гарантирует, что Windows-рантайм запишет честный UTF-8 без BOM и скрытых \r
             std::ofstream outfile(output_file, std::ios::out | std::ios::binary);
             if (!outfile.is_open()) {
-                std::cerr << "Ошибка записи в файл: " << output_file << "\n"; return 1;
+                std::cerr << "Ошибка записи в файл: " << output_file << "\n";
+                return 1;
             }
             outfile << final_output_str;
             std::cout << "* Успешно обработано файлов: " << successful_hashes << ". Результаты сохранены в: " << output_file << "\n";
         } else {
+            // Если ключ -o не задан, выводим накопленный текстовый результат в стандартный консольный поток
             std::cout << final_output_str;
         }
 
     }
     catch (const std::exception &e)
     {
-        std::cerr << "Критическая ошибка: " << e.what() << std::endl;
+        std::cerr << "Критическая ошибка в main: " << e.what() << std::endl;
         return 1;
     }
     return 0;

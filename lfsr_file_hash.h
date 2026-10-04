@@ -2,12 +2,10 @@
 
 #include <charconv>
 #include <semaphore>
+#include <memory>
 #include <thread>
 #include <span>
-#include <vector>
-#include <iostream>
 #include <filesystem>
-#include <fstream>
 #include <string>
 
 #include "lfsr_hash.h"
@@ -17,7 +15,6 @@ namespace fs = std::filesystem;
 
 constexpr size_t chunkSize = 8 * 1024 * 1024;
 constexpr size_t blockSize = 64 * 1024;
-static lfsr_hash::gens generator;
 
 
 #ifdef _WIN32
@@ -94,11 +91,14 @@ inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t
         static_cast<uint16_t>((total_size >> 16) ^ (total_size >> 32))
     };
 
+#ifdef _WIN32
+    // Флаг 'S' внутри fopen в Windows заставляет файловую систему оптимизировать кэш под последовательный доступ (Sequential)
+    FILE *f = fopen(p.string().c_str(), "rbS");
+#else
     FILE *f = fopen(p.string().c_str(), "rb");
-    if (!f) throw std::runtime_error("Не удалось открыть файл.");
+#endif
 
-    std::vector<char> system_cache(8 * 1024 * 1024);
-    setvbuf(f, system_cache.data(), _IOFBF, system_cache.size());
+    if (!f) throw std::runtime_error("Не удалось открыть файл.");
 
     auto bufferA_sptr = std::unique_ptr<uint8_t[], decltype(aligned_deleter)>(ALLOC_ALIGNED(chunkSize), aligned_deleter);
     auto bufferB_sptr = std::unique_ptr<uint8_t[], decltype(aligned_deleter)>(ALLOC_ALIGNED(chunkSize), aligned_deleter);
@@ -108,16 +108,20 @@ inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t
     size_t bytesInA = 0, bytesInB = 0;
     bool isLastA = false, isLastB = false;
 
-    std::binary_semaphore can_read{1};
-    std::binary_semaphore can_process{0};
+    // Разрешаем диску заполнить до 2 буферов наперед, прежде чем он будет принудительно остановлен
+    std::counting_semaphore<2> can_read{2};
+    std::counting_semaphore<2> can_process{0};
 
     u128 total_hash = {0, 0};
     bool done = false;
 
-    gens local_generator;
-    local_generator.reset();
+    // Создаем генератор в куче (heap). Память в куче под x64 всегда выровнена по умолчанию,
+    // и объект гарантированно изолирован от стека вызовов функций.
+    auto local_generator_ptr = std::make_unique<gens>();
+    local_generator_ptr->reset();
 
     std::thread consumer([&]() {
+        uint64_t file_hashed_bytes = 0; // Локальный счетчик обработанных байт
         while (true) {
             can_process.acquire();
             if (done && bytesInA == 0 && bytesInB == 0) break;
@@ -129,16 +133,21 @@ inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t
 
             if (currentLast) {
                 std::fill(currentBuf.begin() + currentBytes, currentBuf.end(), 0);
-                local_generator.add_salt(file_salt);
+                local_generator_ptr->add_salt(file_salt);
             }
 
             const size_t nBlocks = (currentLast ? (currentBytes + blockSize - 1) / blockSize : chunkSize / blockSize);
             for (size_t i = 0; i < nBlocks; ++i) {
                 auto data = currentBuf.subspan(i * blockSize, blockSize);
-                u128 res = hash128(local_generator, std::as_bytes(data));
+                u128 res = hash128(*local_generator_ptr, std::as_bytes(data));
                 total_hash.first ^= res.first;
                 total_hash.second ^= res.second;
             }
+
+            // Буфер успешно обработан процессором. Поток диска уже может читать следующий блок,
+            // пока мы спокойно и безболезненно занимаемся выводом на экран!
+            file_hashed_bytes += currentBytes;
+            bar.update(overall_offset + file_hashed_bytes);
 
             if (processingA) bytesInA = 0; else bytesInB = 0;
             can_read.release();
@@ -160,12 +169,7 @@ inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t
         {
             if (targetA) { bytesInA = read; isLastA = (read < chunkSize); }
             else { bytesInB = read; isLastB = (read < chunkSize); }
-
             file_processed += read;
-
-            // Важно: передаем в прогресс-бар сумму глобального смещения и прогресса текущего файла
-            bar.update(overall_offset + file_processed);
-
             can_process.release();
             if (read < chunkSize) break;
         }
@@ -175,7 +179,10 @@ inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t
         }
     }
 
+    // Сигнализируем потоку-потребителю, что новых блоков с диска больше не будет
     done = true;
+    can_process.release(); // Подталкиваем consumer, если он заснул в ожидании
+
     if (consumer.joinable()) consumer.join();
     fclose(f);
 
