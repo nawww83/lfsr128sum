@@ -38,6 +38,11 @@ public:
         start_time = std::chrono::steady_clock::now();
     }
 
+    void set_label(const std::string& new_label) {
+        label = new_label;
+        last_pct = -1; // Принудительно вызываем перерисовку при смене файла
+    }
+
     void update(size_t processed) {
         if (total_size == 0) return;
         int pct = static_cast<int>((processed * 100) / total_size);

@@ -5,7 +5,7 @@ cmake_policy(SET CMP0091 NEW)
 
 project(
     lfsr128sum 
-    VERSION 2.0.0 
+    VERSION 3.0.0
     LANGUAGES CXX
 )
 
@@ -31,10 +31,25 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+if(WIN32)
+    # Флаги для LLVM-MinGW, чтобы сделать исполняемый файл автономным
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static")
+
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 # 5. ОПРЕДЕЛЕНИЕ ЦЕЛИ (Сначала создаем исполняемый файл)
 # Включаем все файлы исходников и заголовков
 add_executable(lfsr128sum 
     main.cpp
+    progress_bar.h
+    timer.h
+    lfsr_test_suite.hpp
+    lfsr.h
+    lfsr_file_hash.h
+    lfsr_hash.h
+    hardcores.h
+    io_utils.h
 )
 
 # Разрешаем компилятору искать заголовок в папке сборки
