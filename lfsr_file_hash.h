@@ -105,31 +105,34 @@ inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t
     std::span<uint8_t> bufferA(bufferA_sptr.get(), chunkSize);
     std::span<uint8_t> bufferB(bufferB_sptr.get(), chunkSize);
 
-    size_t bytesInA = 0, bytesInB = 0;
-    bool isLastA = false, isLastB = false;
+    // Состояние буферов (теперь это независимые массивы для каждого потока)
+    size_t bytesInBuffer[2] = {0, 0};
+    bool isLastBuffer[2] = {false, false};
 
-    // Разрешаем диску заполнить до 2 буферов наперед, прежде чем он будет принудительно остановлен
     std::counting_semaphore<2> can_read{2};
     std::counting_semaphore<2> can_process{0};
 
     u128 total_hash = {0, 0};
     bool done = false;
 
-    // Создаем генератор в куче (heap). Память в куче под x64 всегда выровнена по умолчанию,
-    // и объект гарантированно изолирован от стека вызовов функций.
     auto local_generator_ptr = std::make_unique<gens>();
     local_generator_ptr->reset();
 
+    // Поток ПРОЦЕССОРА (Consumer)
     std::thread consumer([&]() {
-        uint64_t file_hashed_bytes = 0; // Локальный счетчик обработанных байт
-        while (true) {
-            can_process.acquire();
-            if (done && bytesInA == 0 && bytesInB == 0) break;
+        uint64_t file_hashed_bytes = 0;
+        size_t consumer_index = 0; // Процессор имеет свой личный строгий индекс окна: 0, 1, 0, 1...
 
-            bool processingA = (bytesInA > 0);
-            auto& currentBuf = processingA ? bufferA : bufferB;
-            size_t currentBytes = processingA ? bytesInA : bytesInB;
-            bool currentLast = processingA ? isLastA : isLastB;
+        while (true) {
+            can_process.acquire(); // Ждем, пока диск заполнит буфер с индексом consumer_index
+
+            if (done && bytesInBuffer[0] == 0 && bytesInBuffer[1] == 0) break;
+
+            size_t currentBytes = bytesInBuffer[consumer_index];
+            if (currentBytes == 0 && done) break; // Защита от холостого пинка в конце файла
+
+            auto& currentBuf = (consumer_index == 0) ? bufferA : bufferB;
+            bool currentLast = isLastBuffer[consumer_index];
 
             if (currentLast) {
                 std::fill(currentBuf.begin() + currentBytes, currentBuf.end(), 0);
@@ -144,44 +147,53 @@ inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t
                 total_hash.second ^= res.second;
             }
 
-            // Буфер успешно обработан процессором. Поток диска уже может читать следующий блок,
-            // пока мы спокойно и безболезненно занимаемся выводом на экран!
             file_hashed_bytes += currentBytes;
             bar.update(overall_offset + file_hashed_bytes);
 
-            if (processingA) bytesInA = 0; else bytesInB = 0;
+            // Освобождаем буфер и передаем ход диску
+            bytesInBuffer[consumer_index] = 0;
+
+            // Переключаем индекс процессора строго на следующий буфер (0 -> 1 -> 0)
+            consumer_index = (consumer_index + 1) % 2;
+
             can_read.release();
             if (currentLast) break;
         }
     });
 
-    done = false;
-    uint64_t file_processed = 0; // Сколько байт прочитано конкретно из этого файла
+    uint64_t file_processed = 0;
+    size_t producer_index = 0; // Диск имеет свой собственный строгий индекс: 0, 1, 0, 1...
 
     // Главный поток — Чтение (Producer)
     while (!feof(f)) {
-        can_read.acquire();
-        bool targetA = (bytesInA == 0);
-        auto &targetBuf = targetA ? bufferA : bufferB;
+        can_read.acquire(); // Ждем, пока освободится буфер с индексом producer_index
+
+        auto &targetBuf = (producer_index == 0) ? bufferA : bufferB;
 
         size_t read = fread(targetBuf.data(), 1, chunkSize, f);
-        if (read > 0)
-        {
-            if (targetA) { bytesInA = read; isLastA = (read < chunkSize); }
-            else { bytesInB = read; isLastB = (read < chunkSize); }
+        if (read > 0) {
+            bytesInBuffer[producer_index] = read;
+            isLastBuffer[producer_index] = (read < chunkSize);
+
             file_processed += read;
-            can_process.release();
+
+            // Переключаем индекс диска на следующий буфер ДО релиза, поток защищен
+            size_t old_index = producer_index;
+            producer_index = (producer_index + 1) % 2;
+
+            can_process.release(); // Сигнализируем процессору, что старый индекс готов
+
             if (read < chunkSize) break;
-        }
-        else {
+        } else {
             can_read.release();
             break;
         }
     }
 
-    // Сигнализируем потоку-потребителю, что новых блоков с диска больше не будет
+    // БЕЗОПАСНАЯ ФИНАЛИЗАЦИЯ
     done = true;
-    can_process.release(); // Подталкиваем consumer, если он заснул в ожидании
+    can_process.release(); // Подталкиваем consumer, если он заснул
+
 
     if (consumer.joinable()) consumer.join();
     fclose(f);
