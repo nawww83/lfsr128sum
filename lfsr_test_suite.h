@@ -27,10 +27,12 @@ class LFSRTestSuite
     const std::string_view CYAN = "\033[36m";
     const std::string_view GOLD = "\033[33m";
 
-    // Параметры Golden Hash (v.2.1.0)
+    // Параметры Golden Hash
     static constexpr size_t GOLDEN_M = 64;
-    static constexpr lfsr_hash::u128 GOLDEN_EXPECTED{
-        17892976477579333464ull, 4582246380472290850ull};
+    static constexpr lfsr_hash::u128 GOLDEN_EXPECTED
+    {
+        657046850697345929ull, 946521424373968817ull
+    };
 
     void report(std::string_view name, bool ok, std::string_view expected = "", std::string_view actual = "")
     {
@@ -285,7 +287,7 @@ public:
                 g.g_241x4.set_state(ref_state_241);
                 g.g_251x4.set_state(ref_state_251);
                 if constexpr (sizeof(HashT) == 4)
-                    hashes.push_back(lfsr_hash::hash32(g, data_view));
+                    hashes.push_back(lfsr_hash::hash64(g, data_view)); // Автопреобразование в 32 бита из 64 битов.
                 else
                     hashes.push_back(lfsr_hash::hash64(g, data_view));
             }

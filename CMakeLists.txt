@@ -5,7 +5,7 @@ cmake_policy(SET CMP0091 NEW)
 
 project(
     lfsr128sum 
-    VERSION 3.0.0
+    VERSION 3.1.0
     LANGUAGES CXX
 )
 
@@ -44,7 +44,7 @@ add_executable(lfsr128sum
     main.cpp
     progress_bar.h
     timer.h
-    lfsr_test_suite.hpp
+    lfsr_test_suite.h
     lfsr.h
     lfsr_file_hash.h
     lfsr_hash.h

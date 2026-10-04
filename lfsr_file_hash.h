@@ -32,7 +32,7 @@ namespace lfsr_file_hash {
 
 using namespace lfsr_hash;
 
-constexpr std::string_view HASH_VERSION_PREFIX = "$lfsr128$v1$";
+constexpr std::string_view HASH_VERSION_PREFIX = "$lfsr128$v2$";
 
 // Структура для результата парсинга строки хэша
 struct ParsedHash {
@@ -178,7 +178,6 @@ inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t
             file_processed += read;
 
             // Переключаем индекс диска на следующий буфер ДО релиза, поток защищен
-            size_t old_index = producer_index;
             producer_index = (producer_index + 1) % 2;
 
             can_process.release(); // Сигнализируем процессору, что старый индекс готов

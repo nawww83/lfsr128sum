@@ -79,24 +79,49 @@ namespace lfsr_hash
         void process_input(std::span<const std::byte> input);
 
         /**
-         * @brief Сформировать 32-битный хеш исходя из текущих состояний генераторов.
-         * @details Используется XOR состояний генераторов с некоторой (пока что фиксированной) маской.
-         * Два спаренных генератора дают 4 состояния [x1, x2, x3, x4], размер которых 32 бита.
+         * @brief Сформировать 64-битный хеш исходя из текущих состояний генераторов.
+         * @details Используется ARX состояний генераторов.
          */
-        inline auto form_hash32()
+        inline u64 form_hash64()
         {
             auto st1 = g_251x4.get_state();
             auto st2 = g_241x4.get_state();
-            lfsr8::u32 hash;
-            hash = (st1[0] ^ 1 ^ st1[4]) ^ (st2[0] ^ 3 ^ st2[4]);
-            hash <<= 8;
-            hash |= (st1[1] ^ 3 ^ st1[5]) ^ (st2[1] ^ 1 ^ st2[5]);
-            hash <<= 8;
-            hash |= (st1[2] ^ 5 ^ st1[6]) ^ (st2[2] ^ 5 ^ st2[6]);
-            hash <<= 8;
-            hash |= (st1[3] ^ 3 ^ st1[7]) ^ (st2[3] ^ 3 ^ st2[7]);
+            u32 a;
+            u32 b;
 
-            return hash;
+            a = st1[0] ^ st1[4];
+            a <<= 8; // 8 - потому что переменная-модуль p < 256.
+            a |= st1[1] ^ st1[5];
+            a <<= 8;
+            a |= st1[2] ^ st1[6];
+            a <<= 8;
+            a |= st1[3] ^ st1[7];
+
+            b = st2[0] ^ st2[4];
+            b <<= 8; // 8 - потому что переменная-модуль p < 256.
+            b |= st2[1] ^ st2[5];
+            b <<= 8;
+            b |= st2[2] ^ st2[6];
+            b <<= 8;
+            b |= st2[3] ^ st2[7];
+
+            // Фиксируем входы для конструкции Дэвиса-Мейера
+            const u32 orig_a = a;
+            const u32 orig_b = b;
+
+            // ARX-перемешивание (модифицированный раунд ChaCha)
+            // Для 32 бит достаточно 3-4 таких проходов для полной диффузии
+            for (int i = 0; i < 3; ++i) {
+                a += b; b ^= a; b = std::rotl(b, 16);
+                a += b; b ^= a; b = std::rotl(b, 12);
+                a += b; b ^= a; b = std::rotl(b, 8);
+                a += b; b ^= a; b = std::rotl(b, 7);
+            }
+
+            // 3. Feed-Forward (защита от обратимости)
+            a += orig_a;
+            b += orig_b;
+            return (static_cast<u64>(b) << 32) | static_cast<u64>(a);
         }
     };
 
@@ -137,21 +162,6 @@ namespace lfsr_hash
     }
 
     /**
-     * @brief Получить 32-битный хеш для входных байтов.
-     */
-    inline u32 hash32(gens &g, std::span<const std::byte> input)
-    {
-        const auto n = input.size();
-        g.add_salt( n % 2 ? S1 : S0 );
-        g.add_salt( n % 2 ? S0 : S1 );
-        g.process_input(input);
-        g.add_salt(S2);
-        g.add_salt(S3);
-        u32 h = g.form_hash32();
-        return h;
-    }
-
-    /**
      * @brief Получить 64-битный хеш для входных байтов.
      */
     inline u64 hash64(gens &g, std::span<const std::byte> input)
@@ -162,11 +172,7 @@ namespace lfsr_hash
         g.process_input(input);
         g.add_salt(S2);
         g.add_salt(S3);
-        u64 h1 = g.form_hash32();
-        g.add_salt(S2); // Нужна достаточная соль, чтобы удалиться от текущего состояния.
-        g.add_salt(S4);
-        u64 h2 = g.form_hash32();
-        return (h1 << 32) | h2;
+        return g.form_hash64();
     }
 
     /**
@@ -181,18 +187,10 @@ namespace lfsr_hash
         g.add_salt(S1);
         g.add_salt(S3);
 
-        u64 h1 = g.form_hash32();
+        u64 h1 = g.form_hash64();
         g.add_salt(S3); // Нужна достаточная соль, чтобы удалиться от текущего состояния.
         g.add_salt(S4);
-        u64 h2 = g.form_hash32();
-        g.add_salt(S2); // Нужна достаточная соль, чтобы удалиться от текущего состояния.
-        g.add_salt(S4);
-        u64 h3 = g.form_hash32();
-        g.add_salt(S4); // Нужна достаточная соль, чтобы удалиться от текущего состояния.
-        g.add_salt(S3);
-        u64 h4 = g.form_hash32();
-        return {
-            h1 | (h2 << 32),
-            h3 | (h4 << 32)};
+        u64 h2 = g.form_hash64();
+        return {h1, h2};
     }
 }

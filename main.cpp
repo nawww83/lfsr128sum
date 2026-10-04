@@ -13,7 +13,7 @@
 #include "version.h"
 
 #include "lfsr_file_hash.h"
-#include "lfsr_test_suite.hpp"
+#include "lfsr_test_suite.h"
 
 // Проверяем все возможные макросы компиляторов
 #if defined(__AVX2__)
@@ -70,40 +70,53 @@ static bool verify_checksum_file(const fs::path& checksum_file_path) {
     const std::string_view GREEN = "\033[32m";
     const std::string_view CYAN = "\033[36m";
 
-    // Добавить в verify_checksum_file сразу после открытия файла:
     char bom[2];
     if (infile.read(bom, 2)) {
-        if ((unsigned char)bom[0] == 0xFF && (unsigned char)bom[1] == 0xFE) {
-            std::cerr << RED << "Ошибка: Файл хэшей сохранен в кодировке UTF-16 (LE).\n"
+        unsigned char b0 = static_cast<unsigned char>(bom[0]);
+        unsigned char b1 = static_cast<unsigned char>(bom[1]);
+
+        // Проверяем оба варианта UTF-16 (LE и BE)
+        if ((b0 == 0xFF && b1 == 0xFE) || (b0 == 0xFE && b1 == 0xFF)) {
+            std::string variant = (b0 == 0xFF) ? "LE" : "BE";
+            std::cerr << RED << "Ошибка: Файл хэшей сохранен в кодировке UTF-16 (" << variant << ").\n"
                       << "Пожалуйста, пересохраните файл в кодировке UTF-8 или ASCII." << RESET << "\n";
             return false;
         }
     }
-    infile.seekg(0); // Сбрасываем указатель чтения в начало, если BOM не найден
+
+    // Обязательно сбрасываем флаги (на случай EOF/FAIL при чтении 2 байт) и возвращаем указатель
+    infile.clear();
+    infile.seekg(0);
 
     std::cout << CYAN << "* Анализ файла: " << absolute_checksum_path.filename().string() << RESET << "\n";
 
     while (std::getline(infile, line)) {
         line_counter++;
 
-        // Срезаем Windows/PowerShell BOM (Byte Order Mark) для UTF-8, если он встретился на первой строчке
+        // 1. Срезаем UTF-8 BOM (он обязан быть строго в самом начале первой строки)
         if (line_counter == 1 && line.size() >= 3) {
             if ((unsigned char)line[0] == 0xEF && (unsigned char)line[1] == 0xBB && (unsigned char)line[2] == 0xBF) {
                 line = line.substr(3);
             }
         }
 
-        // Очищаем от невидимых символов на концах (включая \r и \n)
+        // 2. Очищаем пробелы и управляющие символы (<= 32) с конца (работает быстро)
         while (!line.empty() && (unsigned char)line.back() <= 32) {
             line.pop_back();
         }
-        while (!line.empty() && (unsigned char)line.front() <= 32) {
-            line.erase(line.begin());
+
+        // 3. Оптимизированная очистка с начала строки (без побайтового сдвига памяти)
+        size_t first_valid = 0;
+        while (first_valid < line.size() && (unsigned char)line[first_valid] <= 32) {
+            first_valid++;
+        }
+        if (first_valid > 0) {
+            line = line.substr(first_valid);
         }
 
         if (line.empty()) continue;
 
-        // Ищем первый пробел/таб после хэша
+        // 4. Ищем первый пробел/таб после хэша
         size_t space_pos = line.find_first_of(" \t");
         if (space_pos == std::string::npos) {
             std::cout << RED << "Строка " << line_counter << ": Неверный формат (нет разделителя)" << RESET << "\n";
