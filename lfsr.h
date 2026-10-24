@@ -71,8 +71,13 @@ namespace lfsr8
     inline void scalar_back(typename lfsr8::MType<m>::STATE &state, const typename lfsr8::MType<m>::STATE &K, const typename lfsr8::MType<m>::STATE &K_inv, typename lfsr8::MType<m>::SAMPLE input)
     {
         using SAMPLE = typename lfsr8::MType<m>::SAMPLE;
-        const u32 diff = (state[0] >= input ? state[0] - (u32)input : state[0] - input + (u32)p) % (u32)p;
-        const u32 m_v = ((u32)K_inv[0] * diff) % (u32)p;
+        // Приводим вход и текущую ячейку по модулю p, чтобы не зависеть от
+        // переполнения беззнакового типа при input >= p или невыровненном состоянии.
+        const u32 up = (u32)p;
+        const u32 in = (u32)input % up;
+        const u32 cur = (u32)state[0] % up;
+        const u32 diff = cur >= in ? cur - in : cur + up - in;
+        const u32 m_v = ((u32)K_inv[0] * diff) % up;
         for (int i = 0; i < m - 1; i++)
         {
             const u32 prod = m_v * (u32)K[i + 1];
@@ -174,7 +179,7 @@ namespace lfsr8
 
         /**
          * @brief Сделать шаг вперед (осуществить один такт генератора).
-         * @param input Входной символ (должен быть приведен по модулю p!), который подается на вход генератора.
+         * @param input Входной символ, который подается на вход генератора (приводится по модулю p внутри).
          */
         void next(SAMPLE input = 0)
         {
@@ -204,7 +209,7 @@ namespace lfsr8
 
         /**
          * @brief Сделать шаг назад. Является операцией, обратной к next(input).
-         * @param input Входной символ (должен быть приведен по модулю p!), который подается на вход генератора.
+         * @param input Входной символ, который подавался на вход генератора (приводится по модулю p внутри).
          */
         void back(SAMPLE input = 0)
         {
