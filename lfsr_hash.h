@@ -44,6 +44,19 @@ namespace lfsr_hash
         // Простые числа p1, p2 подобраны так, чтобы минимизировать НОД, но и стараться не выходить за пределы байта.
 
     public:
+#ifdef USE_AVX2
+        /**
+         * @brief Общий слитный AVX2-процессор.
+         * @details Матрицы зависят только от K1/K2 и модулей, поэтому строятся
+         * один раз на процесс; инициализация статики потокобезопасна.
+         */
+        static const lfsr8::LFSR_fused_2x4<251, 241> &fused_engine()
+        {
+            static const lfsr8::LFSR_fused_2x4<251, 241> engine{K1, K2};
+            return engine;
+        }
+#endif
+
         /**
          * @brief Конструктор по умолчанию.
          */
@@ -132,7 +145,23 @@ namespace lfsr_hash
         size_t i = 0;
         size_t j = n;
 
-        for (; i + 16 <= j; i += 16)
+#ifdef USE_AVX2
+        // Полные блоки обрабатываются слитно для обоих генераторов.
+        // Слитный путь использует фиксированные матрицы K1/K2; если
+        // коэффициенты подменили через set_K(), откатываемся на общий путь.
+        constexpr size_t FUSED_BYTES = lfsr8::LFSR_fused_2x4<251, 241>::BLOCK_BYTES;
+        const bool fused_ok = g_251x4.get_generator_coeffs() == K1 &&
+                              g_241x4.get_generator_coeffs() == K2;
+        const size_t n_fused = fused_ok ? n / FUSED_BYTES : 0;
+        if (n_fused > 0)
+        {
+            fused_engine().process_blocks(input.data(), n_fused,
+                                          g_251x4.state_ref(), g_241x4.state_ref());
+            i = n_fused * FUSED_BYTES;
+        }
+#endif
+
+        for (; i + 16 <= n; i += 16)
         {
             // Читаем 16 байт целиком.
             __m128i data = _mm_loadu_si128((const __m128i *)(input.data() + i));

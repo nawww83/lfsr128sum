@@ -5,7 +5,7 @@ cmake_policy(SET CMP0091 NEW)
 
 project(
     lfsr128sum 
-    VERSION 3.1.0
+    VERSION 3.2.0
     LANGUAGES CXX
 )
 

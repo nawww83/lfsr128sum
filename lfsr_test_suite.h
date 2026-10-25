@@ -28,10 +28,12 @@ class LFSRTestSuite
     const std::string_view GOLD = "\033[33m";
 
     // Параметры Golden Hash
-    static constexpr size_t GOLDEN_M = 64;
+    // Вектор намеренно включает слитные блоки, 16-байтовый остаток и
+    // побайтовый хвост, чтобы эталон фиксировал всю цепочку обработки.
+    static constexpr size_t GOLDEN_M = 200;
     static constexpr lfsr_hash::u128 GOLDEN_EXPECTED
     {
-        657046850697345929ull, 946521424373968817ull
+        9682266398336795185ull, 1291011280817091015ull
     };
 
     void report(std::string_view name, bool ok, std::string_view expected = "", std::string_view actual = "")
@@ -75,6 +77,9 @@ public:
         test_block_simd_consistency();
         test_simd_consistency_overflowed_input();
         test_simd_block_consistency_overflowed_input();
+
+        test_fused_blocks();
+        test_simd_step_equivalency();
 
         run_coverage_test<lfsr8::u32>("32-bit Hash Coverage");
         run_coverage_test<lfsr8::u64>("64-bit Hash Coverage");
@@ -205,6 +210,136 @@ public:
                state_to_string(s_simd));
     }
 
+    /**
+     * @brief Скалярный эталон обработки входа (семантика next()).
+     */
+    static void process_input_scalar(lfsr_hash::gens &g, std::span<const std::byte> input)
+    {
+        const size_t n = input.size();
+        if (n == 0) return;
+        size_t i = 0;
+        size_t j = n;
+
+        for (; i + 16 <= n; i += 16)
+        {
+            for (int s = 0; s < 4; ++s)
+            {
+                const uint16_t lo = static_cast<uint16_t>(
+                    static_cast<uint8_t>(input[i + 2 * s]) |
+                    (static_cast<uint16_t>(static_cast<uint8_t>(input[i + 2 * s + 1])) << 8));
+                const uint16_t hi = static_cast<uint16_t>(
+                    static_cast<uint8_t>(input[i + 8 + 2 * s]) |
+                    (static_cast<uint16_t>(static_cast<uint8_t>(input[i + 8 + 2 * s + 1])) << 8));
+
+                g.g_251x4.next(lo, hi);
+                g.g_241x4.next(static_cast<uint16_t>(~lo), static_cast<uint16_t>(~hi));
+            }
+        }
+
+        while (i < j)
+        {
+            const uint16_t val_l = static_cast<uint8_t>(input[i]);
+            const uint16_t val_r = (i + 1 < j) ? static_cast<uint8_t>(input[j - 1]) : 0;
+
+            g.g_251x4.next(val_l, val_r);
+            g.g_241x4.next(static_cast<uint16_t>(~val_r), static_cast<uint16_t>(~val_l));
+
+            i++;
+            if (j > i)
+                j--;
+        }
+
+        const uint8_t first = static_cast<uint8_t>(input[0]);
+        const uint16_t x = static_cast<uint16_t>(first | (first << 8));
+        g.g_251x4.next(x, x);
+        g.g_241x4.next(x, x);
+    }
+
+    /**
+     * @brief Проверка слитного AVX2-прохода против скалярного эталона.
+     * @details Покрывает длины, кратные и некратные размеру блока, а также
+     * все ветки хвоста (16-байтовый остаток и побайтовый остаток).
+     */
+    void test_fused_blocks()
+    {
+        static const size_t lens[] = {
+            1, 2, 3, 15, 16, 17, 31, 47, 63, 64, 65, 79, 127, 128, 129,
+            191, 192, 255, 256, 1000, 4096, 65535, 65536, 65537};
+
+        bool ok = true;
+        std::string fail_len = "-";
+
+        for (size_t len : lens)
+        {
+            std::vector<uint8_t> data(len);
+            uint32_t x = 123456789u + static_cast<uint32_t>(len);
+            for (size_t k = 0; k < len; ++k)
+            {
+                x = x * 1664525u + 1013904223u;
+                data[k] = static_cast<uint8_t>(x >> 24);
+            }
+
+            lfsr_hash::gens g_fast, g_ref;
+            g_fast.reset();
+            g_ref.reset();
+            g_fast.add_salt({5, 7, 9});
+            g_ref.add_salt({5, 7, 9});
+
+            const auto view = std::as_bytes(std::span<const uint8_t>(data));
+            g_fast.process_input(view);
+            process_input_scalar(g_ref, view);
+
+            if (!(g_fast.g_251x4.get_state() == g_ref.g_251x4.get_state()) ||
+                !(g_fast.g_241x4.get_state() == g_ref.g_241x4.get_state()))
+            {
+                ok = false;
+                fail_len = std::to_string(len);
+                break;
+            }
+        }
+
+        report("Fused AVX2 vs scalar reference", ok,
+               "all lengths match",
+               ok ? "all lengths match" : ("mismatch at len " + fail_len));
+    }
+
+    /**
+     * @brief Проверка одиночного SIMD-шага против скалярного next().
+     * @details Важно, что состояние уже не единичное: иначе обратная связь
+     * равна нулю и переполнение входа не проявляется.
+     */
+    void test_simd_step_equivalency()
+    {
+        lfsr_hash::gens g_simd, g_scalar;
+        g_simd.reset();
+        g_scalar.reset();
+        for (int i = 0; i < 37; ++i)
+        {
+            g_simd.g_251x4.next(i, i + 3);
+            g_scalar.g_251x4.next(i, i + 3);
+        }
+
+        uint32_t x = 1;
+        bool ok = true;
+        for (int i = 0; i < 4096; ++i)
+        {
+            x = x * 1664525u + 1013904223u;
+            const uint16_t inp1 = static_cast<uint16_t>(x);
+            const uint16_t inp2 = static_cast<uint16_t>(x >> 16);
+
+            g_simd.g_251x4.next_simd(inp1, inp2);
+            g_scalar.g_251x4.next(inp1, inp2);
+
+            if (!(g_simd.g_251x4.get_state() == g_scalar.g_251x4.get_state()))
+            {
+                ok = false;
+                break;
+            }
+        }
+
+        report("SIMD step vs scalar next", ok, "match", ok ? "match" : "mismatch");
+    }
+
     void test_simd_consistency()
     {
         lfsr_hash::gens gen;
@@ -303,12 +438,20 @@ public:
 
         // Форматируем результат через std::format (C++20)
         double coverage_pct = (static_cast<double>(unique_count) * 100.0) / total_attempts;
-        bool ok = (unique_count == total_attempts);
+
+        // Для 32-битного хэша на 65792 входах по парадоксу дней рождения
+        // ожидается ~0.5 коллизии, поэтому допускаем небольшой запас.
+        // Для 64-битного хэша коллизии практически невозможны.
+        const size_t allowed_collisions = (sizeof(HashT) == 4) ? 8 : 0;
+        bool ok = (total_attempts - unique_count <= allowed_collisions);
 
         // Точный вывод: "100.00% (65792)"
-        std::string actual_str = std::format("{:.2f}% ({})", coverage_pct, unique_count);
+        std::string actual_str = std::format("{:.2f}% ({} unique)", coverage_pct, unique_count);
+        std::string expected_str = (allowed_collisions > 0)
+            ? std::format(">= {} unique (допуск {})", total_attempts - allowed_collisions, allowed_collisions)
+            : std::to_string(total_attempts);
 
-        report(label, ok, std::to_string(total_attempts), actual_str);
+        report(label, ok, expected_str, actual_str);
     }
 
     void run_period_check()
@@ -361,7 +504,7 @@ public:
         lfsr_hash::gens g;
         std::array<uint8_t, GOLDEN_M> buff;
         for (int i = 0; i < GOLDEN_M; i++)
-            buff[i] = static_cast<uint8_t>(i);
+            buff[i] = static_cast<uint8_t>(i * 97 + 13);
 
         g.reset();
         g.add_salt({8, 8, 8});

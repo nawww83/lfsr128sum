@@ -12,6 +12,7 @@
  */
 
 #include <cstdint>
+#include <cstddef>
 #include <cassert>
 #include <array>
 #include <type_traits>
@@ -25,6 +26,11 @@
 #ifdef USE_SSE
 #include <immintrin.h>
 #include <smmintrin.h>
+#endif
+
+// Слитный блоковый процессор (LFSR_fused_2x4) требует AVX2.
+#if defined(USE_SSE) && defined(__AVX2__)
+#define USE_AVX2
 #endif
 
 namespace lfsr8
@@ -468,6 +474,12 @@ namespace lfsr8
 #endif
             void next_simd(u16 inp1, u16 inp2)
         {
+            // Вход приводится по модулю p: иначе сумма state + feedback + input
+            // может переполнить 16 бит (так происходит, например, для
+            // дополненных байтов в хвосте) и результат разойдётся с next().
+            inp1 = static_cast<u16>(inp1 % p);
+            inp2 = static_cast<u16>(inp2 % p);
+
             __m128i state = _mm_load_si128((const __m128i *)m_state.data());
             __m128i K_vec = _mm_load_si128((const __m128i *)m_K.data());
 
@@ -573,6 +585,11 @@ namespace lfsr8
         void next_simd_block(__m128i input_128)
         {
             __m128i s = _mm_load_si128((const __m128i *)m_state.data());
+
+            // Входные слова приводятся по модулю p ДО умножения на матрицу G.
+            // Иначе произведение input * G (до 65535 * 250) переполняет 16 бит
+            // и результат расходится со скалярной моделью next().
+            input_128 = simd_mod_p(input_128);
 
             // Бродкаст ячеек состояния (s0..s3 и s4..s7)
             __m128i bS[4];
@@ -721,7 +738,9 @@ namespace lfsr8
         void power_by(u64 q)
         {
             auto x = q;
-            LFSR_paired_2x4<p> lfsr{m_K};
+            // Копия текущего объекта, чтобы не пересчитывать матрицы и
+            // обратные коэффициенты в конструкторе на каждый вызов.
+            LFSR_paired_2x4<p> lfsr{*this};
             lfsr.set_unit_state();
             for (; x != 0;)
             {
@@ -734,6 +753,29 @@ namespace lfsr8
         }
 
         auto get_state() const
+        {
+            return m_state;
+        }
+
+        /**
+         * @brief Коэффициенты порождающего полинома g(x).
+         */
+        u16x8 get_generator_coeffs() const
+        {
+            return m_K;
+        }
+
+        /**
+         * @brief Прямой доступ к ячейкам состояния.
+         * @details Нужен слитному блоковому процессору, чтобы не копировать
+         * состояние туда-обратно на каждый блок.
+         */
+        u16x8 &state_ref()
+        {
+            return m_state;
+        }
+
+        const u16x8 &state_ref() const
         {
             return m_state;
         }
@@ -860,4 +902,309 @@ namespace lfsr8
             return _mm_sub_epi16(res, _mm_and_si128(mask, p_vec));
         }
     };
+
+#ifdef USE_AVX2
+    /**
+     * @brief Слитный блоковый процессор для двух спаренных генераторов с разными модулями.
+     * @details
+     * Состояния обоих генераторов лежат в одном 256-битном регистре: младшие
+     * 128 бит — первый генератор (p1), старшие — второй (p2). За один блок
+     * выполняется STEPS тактов; вклад состояния и входов считается через
+     * предвычисленные матрицы перехода и _mm256_madd_epi16, поэтому редукция
+     * по модулю нужна всего одна (32-битный Барретт) на блок и регистр.
+     *
+     * Матрицы строятся по скалярной модели next(), а входные слова приводятся
+     * по модулю p, поэтому результат побитно совпадает с последовательным
+     * скалярным вычислением (без 16-битного переполнения).
+     *
+     * Раскладка входа соответствует LFSR_paired_2x4::next_simd_block():
+     * за 16 байт данных выполняется 4 такта, младшая половина слова идёт в
+     * нижний регистр, старшая — в верхний; для второго генератора байты
+     * предварительно инвертируются.
+     */
+    template <int p1, int p2>
+    class LFSR_fused_2x4
+    {
+        static_assert(p1 > 1 && p1 < 256);
+        static_assert(p2 > 1 && p2 < 256);
+
+    public:
+        /// Количество тактов генератора в одном блоке.
+        static constexpr int STEPS = 128;
+
+        /// Количество байт данных, обрабатываемых за один блок (4 байта на такт).
+        static constexpr int BLOCK_BYTES = 4 * STEPS;
+
+        constexpr LFSR_fused_2x4(const u16x8 &K1, const u16x8 &K2)
+        {
+            build(K1, K2);
+        }
+
+        /**
+         * @brief Обработать nblocks блоков по BLOCK_BYTES байт.
+         * @param data Входные данные.
+         * @param nblocks Количество полных блоков.
+         * @param state1 Состояние первого генератора (p1), обновляется на месте.
+         * @param state2 Состояние второго генератора (p2), обновляется на месте.
+         */
+        void process_blocks(const std::byte *data, size_t nblocks,
+                            u16x8 &state1, u16x8 &state2) const
+        {
+            __m256i st = _mm256_set_m128i(
+                _mm_load_si128(reinterpret_cast<const __m128i *>(state2.data())),
+                _mm_load_si128(reinterpret_cast<const __m128i *>(state1.data())));
+
+            for (size_t b = 0; b < nblocks; ++b)
+            {
+                const std::byte *src = data + b * BLOCK_BYTES;
+                __m256i acc_lo = _mm256_setzero_si256();
+                __m256i acc_hi = _mm256_setzero_si256();
+
+                for (int k = 0; k < STEPS / 4; ++k)
+                {
+                    __m128i blk = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 16 * k));
+                    // Старшая половина инвертируется: второй генератор
+                    // обрабатывает дополнение входных байтов.
+                    __m256i x = _mm256_xor_si256(_mm256_broadcastsi128_si256(blk), m_mats.hi_inv);
+                    x = reduce_p16(x);
+
+                    const __m256i i01 = _mm256_shuffle_epi8(x, m_mats.m01);
+                    const __m256i i23 = _mm256_shuffle_epi8(x, m_mats.m23);
+                    const __m256i i45 = _mm256_shuffle_epi8(x, m_mats.m45);
+                    const __m256i i67 = _mm256_shuffle_epi8(x, m_mats.m67);
+
+                    acc_lo = _mm256_add_epi32(acc_lo, _mm256_madd_epi16(i01, m_mats.Glo[2 * k]));
+                    acc_lo = _mm256_add_epi32(acc_lo, _mm256_madd_epi16(i23, m_mats.Glo[2 * k + 1]));
+                    acc_hi = _mm256_add_epi32(acc_hi, _mm256_madd_epi16(i45, m_mats.Ghi[2 * k]));
+                    acc_hi = _mm256_add_epi32(acc_hi, _mm256_madd_epi16(i67, m_mats.Ghi[2 * k + 1]));
+                }
+
+                const __m256i s01 = _mm256_shuffle_epi8(st, m_mats.m01);
+                const __m256i s23 = _mm256_shuffle_epi8(st, m_mats.m23);
+                const __m256i s45 = _mm256_shuffle_epi8(st, m_mats.m45);
+                const __m256i s67 = _mm256_shuffle_epi8(st, m_mats.m67);
+
+                const __m256i s_lo = _mm256_add_epi32(acc_lo,
+                    _mm256_add_epi32(_mm256_madd_epi16(s01, m_mats.A01lo),
+                                     _mm256_madd_epi16(s23, m_mats.A23lo)));
+                const __m256i s_hi = _mm256_add_epi32(acc_hi,
+                    _mm256_add_epi32(_mm256_madd_epi16(s45, m_mats.A01hi),
+                                     _mm256_madd_epi16(s67, m_mats.A23hi)));
+
+                st = _mm256_packus_epi32(mod_p32(s_lo), mod_p32(s_hi));
+            }
+
+            _mm_store_si128(reinterpret_cast<__m128i *>(state1.data()), _mm256_castsi256_si128(st));
+            _mm_store_si128(reinterpret_cast<__m128i *>(state2.data()), _mm256_extracti128_si256(st, 1));
+        }
+
+    private:
+        /// Вклады ячеек и входов за STEPS тактов (по одному генератору).
+        struct trans
+        {
+            u16 Alo[4][4]{};        // Влияние ячеек нижнего регистра.
+            u16 Ahi[4][4]{};        // Влияние ячеек верхнего регистра.
+            u16 Glo[STEPS][4]{};    // Влияние входов нижнего регистра.
+            u16 Ghi[STEPS][4]{};    // Влияние входов верхнего регистра.
+        };
+
+        /// Предвычисленные векторы для слитного прохода.
+        struct mats
+        {
+            __m256i A01lo, A23lo, A01hi, A23hi;
+            __m256i Glo[STEPS / 2], Ghi[STEPS / 2];
+            __m256i P, Pm1, R32, R32odd; // 32-битная редукция по модулю.
+            __m256i P16, M16;            // 16-битная редукция входа.
+            __m256i m01, m23, m45, m67;  // pshufb: пара соседних ячеек.
+            __m256i hi_inv;              // Инверсия старшей половины.
+        };
+
+        alignas(32) mats m_mats{};
+
+        /// Матрицы перехода одного генератора с модулем p.
+        /// @details Строятся как степени матрицы перехода A (4x4), а не
+        /// прогоном STEPS шагов для каждой ячейки и каждого входа: это O(STEPS)
+        /// вместо O(STEPS^2) и заметно дешевле при больших блоках.
+        ///   s'[0] = input + K[0]*s[3]
+        ///   s'[i] = s[i-1] + K[i]*s[3], i = 1..3
+        template <int p>
+        static trans build_trans(const u16x8 &K)
+        {
+            trans r{};
+            const u32 up = static_cast<u32>(p);
+
+            for (int half = 0; half < 2; ++half)
+            {
+                const u16 *k = &K[half * 4];
+
+                // B = A^step, v = A^step * e0.
+                u32 B[4][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
+                u32 v[4] = {1, 0, 0, 0};
+
+                for (int step = 0; step < STEPS; ++step)
+                {
+                    // Вход на шаге t даёт вклад A^(STEPS-1-t) * e0.
+                    const int t = STEPS - 1 - step;
+                    for (int j = 0; j < 4; ++j)
+                    {
+                        if (half == 0)
+                            r.Glo[t][j] = static_cast<u16>(v[j]);
+                        else
+                            r.Ghi[t][j] = static_cast<u16>(v[j]);
+                    }
+
+                    u32 nv[4] = {};
+                    nv[0] = (static_cast<u32>(k[0]) * v[3]) % up;
+                    for (int i = 1; i < 4; ++i)
+                        nv[i] = (v[i - 1] + static_cast<u32>(k[i]) * v[3]) % up;
+                    for (int i = 0; i < 4; ++i)
+                        v[i] = nv[i];
+
+                    u32 nb[4][4] = {};
+                    for (int j = 0; j < 4; ++j)
+                    {
+                        nb[0][j] = (static_cast<u32>(k[0]) * B[3][j]) % up;
+                        for (int i = 1; i < 4; ++i)
+                            nb[i][j] = (B[i - 1][j] + static_cast<u32>(k[i]) * B[3][j]) % up;
+                    }
+                    for (int i = 0; i < 4; ++i)
+                        for (int j = 0; j < 4; ++j)
+                            B[i][j] = nb[i][j];
+                }
+
+                // Alo[i][j] — вклад исходной ячейки i в итоговую ячейку j,
+                // то есть B[j][i] (B = A^STEPS).
+                for (int i = 0; i < 4; ++i)
+                    for (int j = 0; j < 4; ++j)
+                    {
+                        if (half == 0)
+                            r.Alo[i][j] = static_cast<u16>(B[j][i]);
+                        else
+                            r.Ahi[i][j] = static_cast<u16>(B[j][i]);
+                    }
+            }
+            return r;
+        }
+
+        void build(const u16x8 &K1, const u16x8 &K2)
+        {
+            const trans t1 = build_trans<p1>(K1);
+            const trans t2 = build_trans<p2>(K2);
+
+            alignas(32) u16 buf[16];
+
+            // Вектор из пар (A[base][j], A[base + 1][j]): дорожки 0..7 — p1,
+            // дорожки 8..15 — p2.
+            auto mk_pair = [&](auto getA, int base)
+            {
+                for (int j = 0; j < 4; ++j)
+                {
+                    buf[j * 2] = getA(t1, base, j);
+                    buf[j * 2 + 1] = getA(t1, base + 1, j);
+                    buf[8 + j * 2] = getA(t2, base, j);
+                    buf[8 + j * 2 + 1] = getA(t2, base + 1, j);
+                }
+                return _mm256_load_si256(reinterpret_cast<const __m256i *>(buf));
+            };
+
+            m_mats.A01lo = mk_pair([](const trans &t, int i, int j) { return t.Alo[i][j]; }, 0);
+            m_mats.A23lo = mk_pair([](const trans &t, int i, int j) { return t.Alo[i][j]; }, 2);
+            m_mats.A01hi = mk_pair([](const trans &t, int i, int j) { return t.Ahi[i][j]; }, 0);
+            m_mats.A23hi = mk_pair([](const trans &t, int i, int j) { return t.Ahi[i][j]; }, 2);
+
+            for (int k = 0; k < STEPS / 2; ++k)
+            {
+                const int t = 2 * k;
+                for (int j = 0; j < 4; ++j)
+                {
+                    buf[j * 2] = t1.Glo[t][j];
+                    buf[j * 2 + 1] = t1.Glo[t + 1][j];
+                    buf[8 + j * 2] = t2.Glo[t][j];
+                    buf[8 + j * 2 + 1] = t2.Glo[t + 1][j];
+                }
+                m_mats.Glo[k] = _mm256_load_si256(reinterpret_cast<const __m256i *>(buf));
+
+                for (int j = 0; j < 4; ++j)
+                {
+                    buf[j * 2] = t1.Ghi[t][j];
+                    buf[j * 2 + 1] = t1.Ghi[t + 1][j];
+                    buf[8 + j * 2] = t2.Ghi[t][j];
+                    buf[8 + j * 2 + 1] = t2.Ghi[t + 1][j];
+                }
+                m_mats.Ghi[k] = _mm256_load_si256(reinterpret_cast<const __m256i *>(buf));
+            }
+
+            // Константы по модулям: дорожки 0..3 — p1, дорожки 4..7 — p2.
+            alignas(32) u32 p32[8], pm1[8], r32[8], odd[8];
+            for (int i = 0; i < 8; ++i)
+            {
+                const u32 p = (i < 4) ? static_cast<u32>(p1) : static_cast<u32>(p2);
+                p32[i] = p;
+                pm1[i] = p - 1;
+                r32[i] = static_cast<u32>(0x100000000ull / p);
+            }
+            for (int i = 0; i < 4; ++i)
+            {
+                odd[i * 2] = r32[i * 2 + 1];
+                odd[i * 2 + 1] = 0;
+            }
+            m_mats.P = _mm256_load_si256(reinterpret_cast<const __m256i *>(p32));
+            m_mats.Pm1 = _mm256_load_si256(reinterpret_cast<const __m256i *>(pm1));
+            m_mats.R32 = _mm256_load_si256(reinterpret_cast<const __m256i *>(r32));
+            m_mats.R32odd = _mm256_load_si256(reinterpret_cast<const __m256i *>(odd));
+
+            alignas(32) u16 p16[16], m16[16];
+            for (int i = 0; i < 16; ++i)
+            {
+                const u16 p = (i < 8) ? static_cast<u16>(p1) : static_cast<u16>(p2);
+                p16[i] = p;
+                m16[i] = static_cast<u16>(65536 / p);
+            }
+            m_mats.P16 = _mm256_load_si256(reinterpret_cast<const __m256i *>(p16));
+            m_mats.M16 = _mm256_load_si256(reinterpret_cast<const __m256i *>(m16));
+
+            // Одна и та же маска выбирает пару соседних 16-битных ячеек
+            // (state[i], state[i+1]) в обеих 128-битных половинах.
+            alignas(32) char shuf[32];
+            auto mk_shuf = [&](int b)
+            {
+                for (int i = 0; i < 8; ++i)
+                {
+                    shuf[i * 4 + 0] = static_cast<char>(b + 0);
+                    shuf[i * 4 + 1] = static_cast<char>(b + 1);
+                    shuf[i * 4 + 2] = static_cast<char>(b + 2);
+                    shuf[i * 4 + 3] = static_cast<char>(b + 3);
+                }
+                return _mm256_load_si256(reinterpret_cast<const __m256i *>(shuf));
+            };
+            m_mats.m01 = mk_shuf(0);
+            m_mats.m23 = mk_shuf(4);
+            m_mats.m45 = mk_shuf(8);
+            m_mats.m67 = mk_shuf(12);
+
+            alignas(32) u64 inv[4] = {0, 0, ~0ull, ~0ull};
+            m_mats.hi_inv = _mm256_load_si256(reinterpret_cast<const __m256i *>(inv));
+        }
+
+        /// Приведение входа по модулю p. Результат лежит в [0, 2p), чего
+        /// достаточно: финальный модуль на блоке всё равно берётся.
+        __m256i reduce_p16(__m256i v) const
+        {
+            const __m256i q = _mm256_mulhi_epu16(v, m_mats.M16);
+            return _mm256_sub_epi16(v, _mm256_mullo_epi16(q, m_mats.P16));
+        }
+
+        /// Редукция восьми 32-битных накоплений по модулю p (Барретт).
+        __m256i mod_p32(__m256i x) const
+        {
+            const __m256i pe = _mm256_mul_epu32(x, m_mats.R32);
+            const __m256i po = _mm256_mul_epu32(_mm256_srli_epi64(x, 32), m_mats.R32odd);
+            const __m256i q = _mm256_blend_epi32(_mm256_srli_epi64(pe, 32),
+                                                 _mm256_slli_epi64(_mm256_srli_epi64(po, 32), 32), 0xAA);
+            const __m256i r = _mm256_sub_epi32(x, _mm256_mullo_epi32(q, m_mats.P));
+            const __m256i mask = _mm256_cmpgt_epi32(r, m_mats.Pm1);
+            return _mm256_sub_epi32(r, _mm256_and_si256(mask, m_mats.P));
+        }
+    };
+#endif
 }

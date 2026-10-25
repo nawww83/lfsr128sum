@@ -167,7 +167,7 @@ static bool verify_checksum_file(const fs::path& checksum_file_path) {
 
         // 5. Проверяем версию и вычисляем реальный хэш файла
         lfsr_file_hash::u128 actual_hash = {0, 0};
-        if (parsed.version == lfsr_file_hash::HASH_VERSION_PREFIX || parsed.version == "legacy") {
+        if (parsed.version == lfsr_file_hash::HASH_VERSION_PREFIX) {
             try {
                 // Создаем временный прогресс-бар для одного конкретного файла.
                 // Передаем размер этого файла. Текст лейбла скрываем, так как статус выведется ниже.
@@ -186,6 +186,13 @@ static bool verify_checksum_file(const fs::path& checksum_file_path) {
                 files_failed++;
                 continue;
             }
+        } else if (parsed.version == "legacy") {
+            // Хэш без префикса: формат до введения версионирования, проверить нельзя.
+            std::cout << filename_part << ": " << RED
+                      << "ХЭШ БЕЗ ПРЕФИКСА ВЕРСИИ (пересоздайте файл контрольных сумм)" << RESET << "\n";
+            all_files_ok = false;
+            files_failed++;
+            continue;
         } else {
             std::cout << filename_part << ": " << RED << "НЕПОДДЕРЖИВАЕМАЯ ВЕРСИЯ АЛГОРИТМА (" << parsed.version << ")" << RESET << "\n";
             all_files_ok = false;

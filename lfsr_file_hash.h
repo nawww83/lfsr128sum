@@ -1,7 +1,8 @@
 #pragma once
 
 #include <charconv>
-#include <semaphore>
+#include <mutex>
+#include <condition_variable>
 #include <memory>
 #include <thread>
 #include <span>
@@ -15,6 +16,39 @@ namespace fs = std::filesystem;
 
 constexpr size_t chunkSize = 8 * 1024 * 1024;
 constexpr size_t blockSize = 64 * 1024;
+
+/**
+ * @brief Счётный семафор на mutex + condition_variable.
+ * @details Замена std::counting_semaphore: в используемой среде (llvm-mingw)
+ * штатный семафор даёт задержку порядка миллисекунд на переключение потока,
+ * из-за чего конвейер чтения/хэширования теряет в разы больше, чем считает.
+ */
+class fast_semaphore
+{
+public:
+    explicit fast_semaphore(int initial) : m_count(initial) {}
+
+    void acquire()
+    {
+        std::unique_lock<std::mutex> lk(m_mutex);
+        m_cv.wait(lk, [this] { return m_count > 0; });
+        --m_count;
+    }
+
+    void release()
+    {
+        {
+            std::lock_guard<std::mutex> lk(m_mutex);
+            ++m_count;
+        }
+        m_cv.notify_one();
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_cv;
+    int m_count;
+};
 
 
 #ifdef _WIN32
@@ -32,7 +66,7 @@ namespace lfsr_file_hash {
 
 using namespace lfsr_hash;
 
-constexpr std::string_view HASH_VERSION_PREFIX = "$lfsr128$v2$";
+constexpr std::string_view HASH_VERSION_PREFIX = "$lfsr128$v3$";
 
 // Структура для результата парсинга строки хэша
 struct ParsedHash {
@@ -109,8 +143,8 @@ inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t
     size_t bytesInBuffer[2] = {0, 0};
     bool isLastBuffer[2] = {false, false};
 
-    std::counting_semaphore<2> can_read{2};
-    std::counting_semaphore<2> can_process{0};
+    fast_semaphore can_read{2};
+    fast_semaphore can_process{0};
 
     u128 total_hash = {0, 0};
     bool done = false;
