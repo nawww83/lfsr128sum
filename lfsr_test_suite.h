@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <algorithm>
+#include <numeric>
 #include <cstdio>
 
 #include "timer.h"
@@ -778,11 +779,12 @@ public:
     }
 
     /**
-     * @brief Показатели солей обязаны быть взаимно просты со всеми периодами.
-     * @details При gcd(q, T) > 1 отображение x -> x^q имеет ядро размера
-     * gcd(q, T): образ сжимается, и вместе с ним падает эффективное
-     * пространство состояний. Инвариант закреплён static_assert в заголовке,
-     * здесь он просто виден в списке тестов.
+     * @brief Показатели солей обязаны быть взаимно просты с порядком группы,
+     * на которой действует возведение в степень.
+     * @details Младшие регистры — поле GF(p^4), порядок p^4 - 1. Старшие —
+     * алгебра GF(p) x GF(p^3), порядок обратимых элементов (p - 1)(p^3 - 1):
+     * с периодом p^3 - 1 он совпадает по взаимной простоте только потому, что
+     * p - 1 делит p^3 - 1. Проверяем оба множителя и саму делимость.
      */
     void test_salt_injectivity()
     {
@@ -790,8 +792,29 @@ public:
                                          lfsr_hash::S2};
         bool ok = true;
         for (const auto &s : salts)
+        {
+            const auto e = static_cast<uint64_t>(s.q);
             ok &= lfsr_hash::salt_is_injective(s.q);
-        report("Salt exponents coprime with periods", ok, "injective",
+            ok &= std::gcd(e, lfsr_hash::T_251_4) == 1;
+            ok &= std::gcd(e, lfsr_hash::T_241_4) == 1;
+            ok &= std::gcd(e, lfsr_hash::U_251) == 1;
+            ok &= std::gcd(e, lfsr_hash::U_241) == 1;
+        }
+
+        // Именно это свойство позволяло проверять только период — пусть тест
+        // падает, если оно когда-нибудь перестанет выполняться.
+        ok &= (lfsr_hash::T_251_3 % (lfsr_hash::P_251 - 1)) == 0;
+        ok &= (lfsr_hash::T_241_3 % (lfsr_hash::P_241 - 1)) == 0;
+
+        // Плохие показатели обязаны отвергаться: 0 — «без сдвига», 5 делит
+        // порядки всех четырёх групп, 6 — все, кроме кубического 251-го,
+        // 7 — только поле 251^4. Инъективность нужна на всех сразу.
+        ok &= !lfsr_hash::salt_is_injective(0);
+        ok &= !lfsr_hash::salt_is_injective(5);
+        ok &= !lfsr_hash::salt_is_injective(6);
+        ok &= !lfsr_hash::salt_is_injective(7);
+
+        report("Salt exponents coprime with group orders", ok, "injective",
                ok ? "injective" : "NOT INJECTIVE");
     }
 
