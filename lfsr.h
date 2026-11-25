@@ -26,6 +26,8 @@
 #ifdef USE_SSE
 #include <immintrin.h>
 #include <smmintrin.h>
+#else
+#error "lfsr.h: SIMD-ядро реализовано только для x86_64 (SSE4.2/AVX2); скалярный путь для других архитектур отсутствует."
 #endif
 
 // Слитный блоковый процессор (LFSR_fused_2x4) требует AVX2.
@@ -263,18 +265,26 @@ namespace lfsr8
         /**
          * @brief Возвести текущее состояние генератора в степень.
          * @param q Показатель степени.
+         * @details q = 0 — тождество (состояние не меняется). Формально x^0 = 1,
+         * но для генератора это означало бы схлопывание в единичное состояние,
+         * одинаковое для всех сообщений, поэтому нулевая степень трактуется как
+         * «сдвиг не применять».
          */
         void power_by(u64 q)
         {
+            if (q == 0)
+                return;
             auto x = q;
             LFSR<p, m> lfsr{m_K};
             lfsr.set_unit_state();
-            for (; x != 0;)
+            for (;;)
             {
                 if ((x & 1) == 1)
                     lfsr.mult_by(get_state());
+                x >>= 1;
+                if (x == 0)
+                    break; // последний square() уже не нужен
                 square();
-                x /= 2;
             }
             set_state(lfsr.get_state());
         }
@@ -735,19 +745,30 @@ namespace lfsr8
             }
         }
 
+        /**
+         * @brief Возвести текущее состояние в степень q.
+         * @details q = 0 — тождество (состояние не меняется). Формально x^0 = 1,
+         * но для генератора это означало бы схлопывание в единичное состояние,
+         * одинаковое для всех сообщений: соль с q = 0 схлопнула бы состояние
+         * в единичное.
+         */
         void power_by(u64 q)
         {
+            if (q == 0)
+                return;
             auto x = q;
             // Копия текущего объекта, чтобы не пересчитывать матрицы и
             // обратные коэффициенты в конструкторе на каждый вызов.
             LFSR_paired_2x4<p> lfsr{*this};
             lfsr.set_unit_state();
-            for (; x != 0;)
+            for (;;)
             {
                 if ((x & 1) == 1)
                     lfsr.mult_by(get_state());
+                x >>= 1;
+                if (x == 0)
+                    break; // последний square() уже не нужен
                 square();
-                x /= 2;
             }
             set_state(lfsr.get_state());
         }
@@ -903,15 +924,13 @@ namespace lfsr8
         }
     };
 
-#ifdef USE_AVX2
     /**
      * @brief Слитный блоковый процессор для двух спаренных генераторов с разными модулями.
      * @details
-     * Состояния обоих генераторов лежат в одном 256-битном регистре: младшие
-     * 128 бит — первый генератор (p1), старшие — второй (p2). За один блок
-     * выполняется STEPS тактов; вклад состояния и входов считается через
-     * предвычисленные матрицы перехода и _mm256_madd_epi16, поэтому редукция
-     * по модулю нужна всего одна (32-битный Барретт) на блок и регистр.
+     * За один блок (BLOCK_BYTES = 512 байт) каждый генератор делает STEPS = 128
+     * тактов. Вклады состояния и входов считаются через предвычисленные
+     * матрицы перехода (A^STEPS и A^k), поэтому редукция по модулю выполняется
+     * один раз на блок, а не на каждом такте.
      *
      * Матрицы строятся по скалярной модели next(), а входные слова приводятся
      * по модулю p, поэтому результат побитно совпадает с последовательным
@@ -919,8 +938,14 @@ namespace lfsr8
      *
      * Раскладка входа соответствует LFSR_paired_2x4::next_simd_block():
      * за 16 байт данных выполняется 4 такта, младшая половина слова идёт в
-     * нижний регистр, старшая — в верхний; для второго генератора байты
-     * предварительно инвертируются.
+     * нижний 4-ячеечный регистр, старшая — в верхний; для второго генератора
+     * байты предварительно инвертируются.
+     *
+     * AVX2: состояния обоих генераторов лежат в одном 256-битном регистре
+     * (младшие 128 бит — p1, старшие — p2).
+     * SSE4.2: те же самые матрицы, но каждый генератор считается в своём
+     * отдельном 128-битном регистре. Математика идентична, поэтому обе сборки
+     * дают побитно одинаковый хэш.
      */
     template <int p1, int p2>
     class LFSR_fused_2x4
@@ -950,6 +975,7 @@ namespace lfsr8
         void process_blocks(const std::byte *data, size_t nblocks,
                             u16x8 &state1, u16x8 &state2) const
         {
+#ifdef USE_AVX2
             __m256i st = _mm256_set_m128i(
                 _mm_load_si128(reinterpret_cast<const __m128i *>(state2.data())),
                 _mm_load_si128(reinterpret_cast<const __m128i *>(state1.data())));
@@ -996,6 +1022,51 @@ namespace lfsr8
 
             _mm_store_si128(reinterpret_cast<__m128i *>(state1.data()), _mm256_castsi256_si128(st));
             _mm_store_si128(reinterpret_cast<__m128i *>(state2.data()), _mm256_extracti128_si256(st, 1));
+#else
+            // SSE4.2: тот же алгоритм, каждый генератор — в своём регистре.
+            __m128i st1 = _mm_load_si128(reinterpret_cast<const __m128i *>(state1.data()));
+            __m128i st2 = _mm_load_si128(reinterpret_cast<const __m128i *>(state2.data()));
+            const __m128i zero = _mm_setzero_si128();
+
+            for (size_t b = 0; b < nblocks; ++b)
+            {
+                const std::byte *src = data + b * BLOCK_BYTES;
+                __m128i a1lo = zero, a1hi = zero, a2lo = zero, a2hi = zero;
+
+                for (int k = 0; k < STEPS / 4; ++k)
+                {
+                    const __m128i blk = _mm_loadu_si128(reinterpret_cast<const __m128i *>(src + 16 * k));
+                    const __m128i x1 = reduce_p16(blk, m_p1);
+                    const __m128i x2 = reduce_p16(_mm_xor_si128(blk, m_p2.ff), m_p2);
+
+                    a1lo = _mm_add_epi32(a1lo, _mm_madd_epi16(_mm_shuffle_epi8(x1, m_p1.m01), m_p1.Glo[2 * k]));
+                    a1lo = _mm_add_epi32(a1lo, _mm_madd_epi16(_mm_shuffle_epi8(x1, m_p1.m23), m_p1.Glo[2 * k + 1]));
+                    a1hi = _mm_add_epi32(a1hi, _mm_madd_epi16(_mm_shuffle_epi8(x1, m_p1.m45), m_p1.Ghi[2 * k]));
+                    a1hi = _mm_add_epi32(a1hi, _mm_madd_epi16(_mm_shuffle_epi8(x1, m_p1.m67), m_p1.Ghi[2 * k + 1]));
+
+                    a2lo = _mm_add_epi32(a2lo, _mm_madd_epi16(_mm_shuffle_epi8(x2, m_p2.m01), m_p2.Glo[2 * k]));
+                    a2lo = _mm_add_epi32(a2lo, _mm_madd_epi16(_mm_shuffle_epi8(x2, m_p2.m23), m_p2.Glo[2 * k + 1]));
+                    a2hi = _mm_add_epi32(a2hi, _mm_madd_epi16(_mm_shuffle_epi8(x2, m_p2.m45), m_p2.Ghi[2 * k]));
+                    a2hi = _mm_add_epi32(a2hi, _mm_madd_epi16(_mm_shuffle_epi8(x2, m_p2.m67), m_p2.Ghi[2 * k + 1]));
+                }
+
+                a1lo = _mm_add_epi32(a1lo, _mm_madd_epi16(_mm_shuffle_epi8(st1, m_p1.m01), m_p1.A01lo));
+                a1lo = _mm_add_epi32(a1lo, _mm_madd_epi16(_mm_shuffle_epi8(st1, m_p1.m23), m_p1.A23lo));
+                a1hi = _mm_add_epi32(a1hi, _mm_madd_epi16(_mm_shuffle_epi8(st1, m_p1.m45), m_p1.A01hi));
+                a1hi = _mm_add_epi32(a1hi, _mm_madd_epi16(_mm_shuffle_epi8(st1, m_p1.m67), m_p1.A23hi));
+
+                a2lo = _mm_add_epi32(a2lo, _mm_madd_epi16(_mm_shuffle_epi8(st2, m_p2.m01), m_p2.A01lo));
+                a2lo = _mm_add_epi32(a2lo, _mm_madd_epi16(_mm_shuffle_epi8(st2, m_p2.m23), m_p2.A23lo));
+                a2hi = _mm_add_epi32(a2hi, _mm_madd_epi16(_mm_shuffle_epi8(st2, m_p2.m45), m_p2.A01hi));
+                a2hi = _mm_add_epi32(a2hi, _mm_madd_epi16(_mm_shuffle_epi8(st2, m_p2.m67), m_p2.A23hi));
+
+                st1 = _mm_packus_epi32(mod_p32(a1lo, m_p1), mod_p32(a1hi, m_p1));
+                st2 = _mm_packus_epi32(mod_p32(a2lo, m_p2), mod_p32(a2hi, m_p2));
+            }
+
+            _mm_store_si128(reinterpret_cast<__m128i *>(state1.data()), st1);
+            _mm_store_si128(reinterpret_cast<__m128i *>(state2.data()), st2);
+#endif
         }
 
     private:
@@ -1008,6 +1079,7 @@ namespace lfsr8
             u16 Ghi[STEPS][4]{};    // Влияние входов верхнего регистра.
         };
 
+#ifdef USE_AVX2
         /// Предвычисленные векторы для слитного прохода.
         struct mats
         {
@@ -1020,6 +1092,7 @@ namespace lfsr8
         };
 
         alignas(32) mats m_mats{};
+#endif
 
         /// Матрицы перехода одного генератора с модулем p.
         /// @details Строятся как степени матрицы перехода A (4x4), а не
@@ -1086,6 +1159,7 @@ namespace lfsr8
             return r;
         }
 
+#ifdef USE_AVX2
         void build(const u16x8 &K1, const u16x8 &K2)
         {
             const trans t1 = build_trans<p1>(K1);
@@ -1205,6 +1279,288 @@ namespace lfsr8
             const __m256i mask = _mm256_cmpgt_epi32(r, m_mats.Pm1);
             return _mm256_sub_epi32(r, _mm256_and_si256(mask, m_mats.P));
         }
-    };
+#else
+        /// Предвычисленные векторы SSE4.2-прохода (на один генератор).
+        struct mats128
+        {
+            __m128i A01lo, A23lo, A01hi, A23hi;
+            __m128i Glo[STEPS / 2], Ghi[STEPS / 2];
+            __m128i P, Pm1, R32;     // 32-битная редукция по модулю.
+            __m128i P16, M16;        // 16-битная редукция входа.
+            __m128i m01, m23, m45, m67; // pshufb: пара соседних ячеек.
+            __m128i ff;              // 0xFFFF: инверсия входных байтов.
+        };
+
+        alignas(16) mats128 m_p1{};
+        alignas(16) mats128 m_p2{};
+
+        static void build_one(const trans &t, u32 p, mats128 &m)
+        {
+            alignas(16) u16 buf[8];
+
+            auto pair = [&](int i0, int i1, const u16 (&A)[4][4])
+            {
+                for (int j = 0; j < 4; ++j)
+                {
+                    buf[j * 2] = A[i0][j];
+                    buf[j * 2 + 1] = A[i1][j];
+                }
+                return _mm_load_si128(reinterpret_cast<const __m128i *>(buf));
+            };
+
+            m.A01lo = pair(0, 1, t.Alo);
+            m.A23lo = pair(2, 3, t.Alo);
+            m.A01hi = pair(0, 1, t.Ahi);
+            m.A23hi = pair(2, 3, t.Ahi);
+
+            for (int k = 0; k < STEPS / 2; ++k)
+            {
+                const int tt = 2 * k;
+                for (int j = 0; j < 4; ++j)
+                {
+                    buf[j * 2] = t.Glo[tt][j];
+                    buf[j * 2 + 1] = t.Glo[tt + 1][j];
+                }
+                m.Glo[k] = _mm_load_si128(reinterpret_cast<const __m128i *>(buf));
+
+                for (int j = 0; j < 4; ++j)
+                {
+                    buf[j * 2] = t.Ghi[tt][j];
+                    buf[j * 2 + 1] = t.Ghi[tt + 1][j];
+                }
+                m.Ghi[k] = _mm_load_si128(reinterpret_cast<const __m128i *>(buf));
+            }
+
+            m.P = _mm_set1_epi32(static_cast<int>(p));
+            m.Pm1 = _mm_set1_epi32(static_cast<int>(p - 1));
+            m.R32 = _mm_set1_epi32(static_cast<int>(0x100000000ull / p));
+            m.P16 = _mm_set1_epi16(static_cast<short>(p));
+            m.M16 = _mm_set1_epi16(static_cast<short>(65536 / p));
+
+            // Каждая маска размножает пару соседних ячеек по всем 32-битным дорожкам.
+            m.m01 = _mm_setr_epi8(0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3);
+            m.m23 = _mm_setr_epi8(4, 5, 6, 7, 4, 5, 6, 7, 4, 5, 6, 7, 4, 5, 6, 7);
+            m.m45 = _mm_setr_epi8(8, 9, 10, 11, 8, 9, 10, 11, 8, 9, 10, 11, 8, 9, 10, 11);
+            m.m67 = _mm_setr_epi8(12, 13, 14, 15, 12, 13, 14, 15, 12, 13, 14, 15, 12, 13, 14, 15);
+            m.ff = _mm_set1_epi16(-1);
+        }
+
+        void build(const u16x8 &K1, const u16x8 &K2)
+        {
+            build_one(build_trans<p1>(K1), static_cast<u32>(p1), m_p1);
+            build_one(build_trans<p2>(K2), static_cast<u32>(p2), m_p2);
+        }
+
+        /// Приведение входа по модулю p (значение остаётся в [0, 2p)).
+        static __m128i reduce_p16(__m128i v, const mats128 &m)
+        {
+            const __m128i q = _mm_mulhi_epu16(v, m.M16);
+            return _mm_sub_epi16(v, _mm_mullo_epi16(q, m.P16));
+        }
+
+        /// Редукция четырёх 32-битных накоплений по модулю p (Барретт).
+        static __m128i mod_p32(__m128i x, const mats128 &m)
+        {
+            const __m128i pe = _mm_mul_epu32(x, m.R32);
+            const __m128i po = _mm_mul_epu32(_mm_srli_epi64(x, 32), m.R32);
+            const __m128i q = _mm_blend_epi16(_mm_srli_epi64(pe, 32),
+                                              _mm_slli_epi64(_mm_srli_epi64(po, 32), 32), 0xCC);
+            const __m128i r = _mm_sub_epi32(x, _mm_mullo_epi32(q, m.P));
+            const __m128i mask = _mm_cmpgt_epi32(r, m.Pm1);
+            return _mm_sub_epi32(r, _mm_and_si128(mask, m.P));
+        }
 #endif
+    };
+
+    /**
+     * @brief Слитное возведение состояния в степень сразу для двух
+     * спаренных генераторов с разными модулями (p1 и p2).
+     * @details
+     * `gens::add_salt` возводит в степень q оба генератора с одинаковым q.
+     * Раньше это были два независимых прохода, каждый со своими 128-битными
+     * SIMD-операциями. Здесь состояния пары (p1) и пары (p2) лежат в одном
+     * 256-битном регистре (младшая половина — p1, старшая — p2), поэтому
+     * такт генератора выполняется один раз на обе пары.
+     *
+     * Арифметика идентична LFSR_paired_2x4::power_by: те же скалярные
+     * свёртки для вычисления входа и тот же 16-битный Барретт, только с
+     * разными p в половинах регистра. Результат побитно совпадает с
+     * раздельным вычислением (это проверяет эталонный тест).
+     */
+    template <int p1, int p2>
+    class LFSR_fused_exp
+    {
+        static_assert(p1 > 1 && p1 < 256);
+        static_assert(p2 > 1 && p2 < 256);
+
+    public:
+        LFSR_fused_exp(const u16x8 &K1, const u16x8 &K2)
+        {
+#ifdef USE_AVX2
+            m_K = _mm256_set_m128i(load128(K2), load128(K1));
+            m_M = _mm256_set_m128i(_mm_set1_epi16(static_cast<short>(M(p2))),
+                                   _mm_set1_epi16(static_cast<short>(M(p1))));
+            m_P = _mm256_set_m128i(_mm_set1_epi16(static_cast<short>(p2)),
+                                   _mm_set1_epi16(static_cast<short>(p1)));
+            m_Pm1 = _mm256_set_m128i(_mm_set1_epi16(static_cast<short>(p2 - 1)),
+                                     _mm_set1_epi16(static_cast<short>(p1 - 1)));
+
+            // pshufb: размножить ячейку 3 (байты 6..7) на нижние 4 ячейки
+            // и ячейку 7 (байты 14..15) — на верхние 4, в каждом lane.
+            m_bcast = _mm256_setr_epi8(
+                6, 7, 6, 7, 6, 7, 6, 7, 14, 15, 14, 15, 14, 15, 14, 15,
+                6, 7, 6, 7, 6, 7, 6, 7, 14, 15, 14, 15, 14, 15, 14, 15);
+
+            // Занулить ячейки 0 и 4 (байты 0..1 и 8..9) в каждом lane.
+            m_iso = _mm256_setr_epi8(
+                0, 0, -1, -1, -1, -1, -1, -1, 0, 0, -1, -1, -1, -1, -1, -1,
+                0, 0, -1, -1, -1, -1, -1, -1, 0, 0, -1, -1, -1, -1, -1, -1);
+#else
+            m_K1 = load128(K1);
+            m_K2 = load128(K2);
+            m_M1 = _mm_set1_epi16(static_cast<short>(M(p1)));
+            m_M2 = _mm_set1_epi16(static_cast<short>(M(p2)));
+            m_P1 = _mm_set1_epi16(static_cast<short>(p1));
+            m_P2 = _mm_set1_epi16(static_cast<short>(p2));
+            m_Pm1_1 = _mm_set1_epi16(static_cast<short>(p1 - 1));
+            m_Pm1_2 = _mm_set1_epi16(static_cast<short>(p2 - 1));
+            m_bcast = _mm_setr_epi8(
+                6, 7, 6, 7, 6, 7, 6, 7, 14, 15, 14, 15, 14, 15, 14, 15);
+            m_iso = _mm_setr_epi8(
+                0, 0, -1, -1, -1, -1, -1, -1, 0, 0, -1, -1, -1, -1, -1, -1);
+#endif
+        }
+
+        /**
+         * @brief state1 := state1^q, state2 := state2^q.
+         * @details q = 0 — тождество (состояния не меняются).
+         */
+        void run(u16x8 &state1, u16x8 &state2, u64 q) const
+        {
+            if (q == 0)
+                return;
+
+            u16x8 acc1{1, 0, 0, 0, 1, 0, 0, 0};
+            u16x8 acc2 = acc1;
+            u16x8 src1 = state1;
+            u16x8 src2 = state2;
+
+            for (;;)
+            {
+                if ((q & 1) != 0)
+                    mul(acc1, src1, acc2, src2);
+                q >>= 1;
+                if (q == 0)
+                    break; // последний квадрат уже не нужен
+                mul(src1, src1, src2, src2);
+            }
+
+            state1 = acc1;
+            state2 = acc2;
+        }
+
+    private:
+        static constexpr u16 M(int p) { return static_cast<u16>((1u << 16) / p); }
+
+        static __m128i load128(const u16x8 &a)
+        {
+            // Локальные копии состояний (acc/src) не имеют alignas(16),
+            // поэтому используем невыровненную загрузку.
+            return _mm_loadu_si128(reinterpret_cast<const __m128i *>(a.data()));
+        }
+
+        /// acc := acc * b для обеих пар; b может совпадать с acc (square).
+        void mul(u16x8 &a1, const u16x8 &b1, u16x8 &a2, const u16x8 &b2) const
+        {
+            u16x8 ac1 = a1, ac2 = a2;
+            const u16x8 &br1 = (&b1 == &a1) ? ac1 : b1;
+            const u16x8 &br2 = (&b2 == &a2) ? ac2 : b2;
+
+            // Как и в mult_by, накопитель начинает с нуля: произведение
+            // собирается семью тактами next() из скалярных свёрток.
+#ifdef USE_AVX2
+            __m256i st = _mm256_setzero_si256();
+#else
+            __m128i st1 = _mm_setzero_si128(), st2 = _mm_setzero_si128();
+#endif
+
+            for (int power = 6; power >= 0; --power)
+            {
+                u32 v1 = 0, v2 = 0, v3 = 0, v4 = 0;
+                const int first = (power > 3) ? power - 3 : 0;
+                const int last = (power < 3) ? power : 3;
+                for (int i = first; i <= last; ++i)
+                {
+                    v1 += static_cast<u32>(ac1[i]) * br1[power - i];
+                    v2 += static_cast<u32>(ac1[i + 4]) * br1[power - i + 4];
+                    v3 += static_cast<u32>(ac2[i]) * br2[power - i];
+                    v4 += static_cast<u32>(ac2[i + 4]) * br2[power - i + 4];
+                }
+
+#ifdef USE_AVX2
+                st = next(st, static_cast<u16>(v1 % p1), static_cast<u16>(v2 % p1),
+                              static_cast<u16>(v3 % p2), static_cast<u16>(v4 % p2));
+#else
+                st1 = next(st1, m_K1, m_M1, m_P1, m_Pm1_1,
+                           static_cast<u16>(v1 % p1), static_cast<u16>(v2 % p1));
+                st2 = next(st2, m_K2, m_M2, m_P2, m_Pm1_2,
+                           static_cast<u16>(v3 % p2), static_cast<u16>(v4 % p2));
+#endif
+            }
+
+#ifdef USE_AVX2
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(a1.data()),
+                             _mm256_castsi256_si128(st));
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(a2.data()),
+                             _mm256_extracti128_si256(st, 1));
+#else
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(a1.data()), st1);
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(a2.data()), st2);
+#endif
+        }
+
+#ifdef USE_AVX2
+        /// Один такт обеих пар: сдвиг, обратная связь K, входы, Барретт.
+        __m256i next(__m256i st, u16 v1, u16 v2, u16 v3, u16 v4) const
+        {
+            const __m256i shifted = _mm256_and_si256(_mm256_slli_si256(st, 2), m_iso);
+            const __m256i vv = _mm256_shuffle_epi8(st, m_bcast);
+            const __m256i prod = _mm256_mullo_epi16(vv, m_K);
+            const __m256i inp = _mm256_setr_epi16(
+                static_cast<short>(v1), 0, 0, 0, static_cast<short>(v2), 0, 0, 0,
+                static_cast<short>(v3), 0, 0, 0, static_cast<short>(v4), 0, 0, 0);
+
+            __m256i res = _mm256_add_epi16(_mm256_add_epi16(shifted, prod), inp);
+            const __m256i q = _mm256_mulhi_epu16(res, m_M);
+            res = _mm256_sub_epi16(res, _mm256_mullo_epi16(q, m_P));
+            const __m256i mask = _mm256_cmpgt_epi16(res, m_Pm1);
+            return _mm256_sub_epi16(res, _mm256_and_si256(mask, m_P));
+        }
+#else
+        /// Один такт одной пары (для SSE4.2-сборки).
+        __m128i next(__m128i st, __m128i K, __m128i Mv, __m128i Pv, __m128i Pm1,
+                     u16 v1, u16 v2) const
+        {
+            const __m128i shifted = _mm_and_si128(_mm_slli_si128(st, 2), m_iso);
+            const __m128i vv = _mm_shuffle_epi8(st, m_bcast);
+            const __m128i prod = _mm_mullo_epi16(vv, K);
+            const __m128i inp = _mm_setr_epi16(
+                static_cast<short>(v1), 0, 0, 0, static_cast<short>(v2), 0, 0, 0);
+
+            __m128i res = _mm_add_epi16(_mm_add_epi16(shifted, prod), inp);
+            const __m128i q = _mm_mulhi_epu16(res, Mv);
+            res = _mm_sub_epi16(res, _mm_mullo_epi16(q, Pv));
+            const __m128i mask = _mm_cmpgt_epi16(res, Pm1);
+            return _mm_sub_epi16(res, _mm_and_si128(mask, Pv));
+        }
+#endif
+
+#ifdef USE_AVX2
+        __m256i m_K{}, m_M{}, m_P{}, m_Pm1{}, m_bcast{}, m_iso{};
+#else
+        __m128i m_K1{}, m_K2{}, m_M1{}, m_M2{}, m_P1{}, m_P2{};
+        __m128i m_Pm1_1{}, m_Pm1_2{}, m_bcast{}, m_iso{};
+#endif
+    };
+
 }

@@ -5,7 +5,7 @@ cmake_policy(SET CMP0091 NEW)
 
 project(
     lfsr128sum 
-    VERSION 3.2.0
+    VERSION 4.0.0
     LANGUAGES CXX
 )
 
@@ -67,27 +67,51 @@ int main() {
 
 # 1. Временно добавляем флаг для компилятора Clang/GCC
 set(SAFE_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
-set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -mavx2")
+if(MSVC)
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} /arch:AVX2")
+else()
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -mavx2")
+endif()
 
 check_cxx_source_runs("${AVX2_CODE}" HAS_AVX2)
 
 # 2. Возвращаем флаги обратно
 set(CMAKE_REQUIRED_FLAGS "${SAFE_CMAKE_REQUIRED_FLAGS}")
 
-if(NOT HAS_AVX2)
-    message(FATAL_ERROR "CPU не поддерживает AVX2. Сборка невозможна, так как проект оптимизирован под этот набор инструкций.")
+# AVX2 не обязателен: без него собирается эквивалентный SSE4.2-путь
+# (результаты хэширования побитно те же, скорость ниже примерно вдвое).
+option(LFSR_ARCH_NATIVE "Оптимизировать под CPU сборки (-march=native, AVX2)" ON)
+
+if(HAS_AVX2 AND LFSR_ARCH_NATIVE)
+    message(STATUS "SIMD: AVX2, слитный блоковый процессор")
+elseif(HAS_AVX2)
+    message(STATUS "SIMD: SSE4.2 (LFSR_ARCH_NATIVE=OFF), результаты идентичны AVX2")
+else()
+    message(WARNING
+        "CPU не поддерживает AVX2. Будет собран эквивалентный SSE4.2-путь: "
+        "результаты хэширования побитно совпадают; пропускная способность "
+        "ниже примерно вдвое (~4 ГБ/с против ~8 ГБ/с у AVX2).")
+    message(STATUS "SIMD: SSE4.2")
 endif()
 
 # 6. НАСТРОЙКА ФЛАГОВ SIMD
 if(MSVC)
-    # /arch:AVX2 автоматически включает SSE4.2 и ниже. 
     # /Oi включает генерацию внутренних функций (intrinsics).
-    target_compile_options(lfsr128sum PRIVATE /arch:AVX2 /Oi)
+    # /arch:AVX2 автоматически включает SSE4.2 и ниже, поэтому он нужен
+    # только когда AVX2 реально поддерживается.
+    target_compile_options(lfsr128sum PRIVATE /Oi)
+    if(HAS_AVX2 AND LFSR_ARCH_NATIVE)
+        target_compile_options(lfsr128sum PRIVATE /arch:AVX2)
+    endif()
     target_compile_definitions(lfsr128sum PRIVATE SIMD_ENABLED=1)
 else()
-    # -march=native заставляет GCC/Clang использовать все инструкции текущего CPU.
-    # -msse4.2 гарантирует поддержку SSE 4.2 даже если native не сработал.
-    target_compile_options(lfsr128sum PRIVATE -march=native -msse4.2)
+    # -msse4.2 гарантирует SSE 4.2 (нужен для pshufb/blend/mullo_epi32).
+    # -march=native добавляет AVX2 и тюнинг под CPU сборки; с
+    # -DLFSR_ARCH_NATIVE=OFF получается переносимый SSE4.2-бинарник.
+    target_compile_options(lfsr128sum PRIVATE -msse4.2)
+    if(HAS_AVX2 AND LFSR_ARCH_NATIVE)
+        target_compile_options(lfsr128sum PRIVATE -march=native)
+    endif()
     target_compile_definitions(lfsr128sum PRIVATE SIMD_ENABLED=1)
 endif()
 

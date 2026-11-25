@@ -4,6 +4,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <span>
 #include <filesystem>
@@ -15,7 +16,6 @@
 namespace fs = std::filesystem;
 
 constexpr size_t chunkSize = 8 * 1024 * 1024;
-constexpr size_t blockSize = 64 * 1024;
 
 /**
  * @brief Счётный семафор на mutex + condition_variable.
@@ -66,7 +66,7 @@ namespace lfsr_file_hash {
 
 using namespace lfsr_hash;
 
-constexpr std::string_view HASH_VERSION_PREFIX = "$lfsr128$v3$";
+constexpr std::string_view HASH_VERSION_PREFIX = "$lfsr128$v4$";
 
 // Структура для результата парсинга строки хэша
 struct ParsedHash {
@@ -112,18 +112,16 @@ inline std::optional<u128> hex_to_u128(std::string_view hex_str) {
     return result;
 }
 
-// Функция принимает путь к файлу, ProgressBar по ссылке и смещение по байтам, и возвращает u128 хэш
-inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t overall_offset) {
+// Функция принимает путь к файлу, ProgressBar по ссылке и смещение по байтам, и возвращает u128 хэш.
+// Если передан key, считается MAC: иначе — обычная контрольная сумма.
+inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t overall_offset,
+                                   const lfsr_hash::key_ctx* key = nullptr) {
     if (!fs::exists(p) || !fs::is_regular_file(p)) {
         throw std::runtime_error("Файл не найден или недоступен.");
     }
 
     const uint64_t total_size = fs::file_size(p);
-    const salt file_salt = {
-        static_cast<int>(total_size % blockSize),
-        static_cast<uint16_t>(total_size & 0xFFFF),
-        static_cast<uint16_t>((total_size >> 16) ^ (total_size >> 32))
-    };
+    (void)total_size; // длина теперь связывается внутри hasher::finish()
 
 #ifdef _WIN32
     // Флаг 'S' внутри fopen в Windows заставляет файловую систему оптимизировать кэш под последовательный доступ (Sequential)
@@ -149,8 +147,9 @@ inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t
     u128 total_hash = {0, 0};
     bool done = false;
 
-    auto local_generator_ptr = std::make_unique<gens>();
-    local_generator_ptr->reset();
+    lfsr_hash::hasher local_hasher;
+    if (key)
+        local_hasher.set_key(*key);
 
     // Поток ПРОЦЕССОРА (Consumer)
     std::thread consumer([&]() {
@@ -168,18 +167,9 @@ inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t
             auto& currentBuf = (consumer_index == 0) ? bufferA : bufferB;
             bool currentLast = isLastBuffer[consumer_index];
 
-            if (currentLast) {
-                std::fill(currentBuf.begin() + currentBytes, currentBuf.end(), 0);
-                local_generator_ptr->add_salt(file_salt);
-            }
-
-            const size_t nBlocks = (currentLast ? (currentBytes + blockSize - 1) / blockSize : chunkSize / blockSize);
-            for (size_t i = 0; i < nBlocks; ++i) {
-                auto data = currentBuf.subspan(i * blockSize, blockSize);
-                u128 res = hash128(*local_generator_ptr, std::as_bytes(data));
-                total_hash.first ^= res.first;
-                total_hash.second ^= res.second;
-            }
+            // Один потоковый проход: ни дополнения нулями, ни солей на блок,
+            // ни XOR блочных хэшей. Состояние и длина живут внутри hasher.
+            local_hasher.update(std::as_bytes(currentBuf.subspan(0, currentBytes)));
 
             file_hashed_bytes += currentBytes;
             bar.update(overall_offset + file_hashed_bytes);
@@ -193,6 +183,9 @@ inline u128 calculate_file_hash128(const fs::path& p, ProgressBar& bar, uint64_t
             can_read.release();
             if (currentLast) break;
         }
+
+        // Финализация: полная длина + нелинейное слагаемое + одна 128-битная финализация.
+        total_hash = local_hasher.finish();
     });
 
     uint64_t file_processed = 0;

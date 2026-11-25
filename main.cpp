@@ -2,12 +2,20 @@
 #include <filesystem>
 #include <iostream>
 #include <iomanip>
+#include <iterator>
+#include <optional>
 #include <sstream>
 #include <fstream>
+#include <span>
 #include <string_view>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#else
+#include <unistd.h>
 #endif
 
 #include "version.h"
@@ -46,7 +54,169 @@
 
 namespace fs = std::filesystem;
 
-static bool verify_checksum_file(const fs::path& checksum_file_path) {
+// ========================================================================
+// Keyed-режим (MAC): ключ задаётся hex-строкой или файлом с байтами.
+// Ключ дополняется нулями до 64 байт, поэтому пароль сюда передавать нельзя —
+// его надо сначала прогнать через KDF (argon2/scrypt) и взять 32 байта.
+// ========================================================================
+
+static bool hex_nibble(char c, uint8_t &out)
+{
+    if (c >= '0' && c <= '9') { out = static_cast<uint8_t>(c - '0'); return true; }
+    if (c >= 'a' && c <= 'f') { out = static_cast<uint8_t>(c - 'a' + 10); return true; }
+    if (c >= 'A' && c <= 'F') { out = static_cast<uint8_t>(c - 'A' + 10); return true; }
+    return false;
+}
+
+static std::optional<std::vector<uint8_t>> parse_hex_key(std::string_view hex)
+{
+    if (hex.empty() || hex.size() % 2 != 0 || hex.size() > lfsr_hash::KEY_MAX * 2)
+        return std::nullopt;
+
+    std::vector<uint8_t> key(hex.size() / 2);
+    for (size_t i = 0; i < key.size(); ++i)
+    {
+        uint8_t hi, lo;
+        if (!hex_nibble(hex[2 * i], hi) || !hex_nibble(hex[2 * i + 1], lo))
+            return std::nullopt;
+        key[i] = static_cast<uint8_t>((hi << 4) | lo);
+    }
+    return key;
+}
+
+/// Читается ли ключ из stdin: путь "-" вместо имени файла.
+static bool key_from_stdin(const fs::path &p)
+{
+    return p == fs::path("-");
+}
+
+/// Является ли stdin терминалом (тогда ключ из него не читаем).
+static bool stdin_is_tty()
+{
+#ifdef _WIN32
+    return _isatty(_fileno(stdin)) != 0;
+#else
+    return isatty(STDIN_FILENO) != 0;
+#endif
+}
+
+/**
+ * @brief Прочитать ключ из файла или из stdin (путь "-").
+ * @details Один завершающий перевод строки (LF или CRLF) отбрасывается, чтобы
+ * годился и файл, созданный редактором, и `echo secret | ... > key` без
+ * флага -n. Ключ с настоящим последним байтом 0x0A передаётся двумя
+ * переводами строки: лишний отбросится.
+ */
+static std::optional<std::vector<uint8_t>> read_key_file(const fs::path &p)
+{
+    std::vector<uint8_t> key;
+
+    if (key_from_stdin(p))
+    {
+#ifdef _WIN32
+        // Иначе CRT превратит \r\n в \n и обрежет байты не по-честному.
+        _setmode(_fileno(stdin), _O_BINARY);
+#endif
+        key.assign(std::istreambuf_iterator<char>(std::cin),
+                   std::istreambuf_iterator<char>());
+    }
+    else
+    {
+        std::ifstream in(p, std::ios::binary);
+        if (!in.is_open())
+            return std::nullopt;
+        key.assign(std::istreambuf_iterator<char>(in),
+                   std::istreambuf_iterator<char>());
+    }
+
+    if (!key.empty() && key.back() == '\n')
+    {
+        key.pop_back();
+        if (!key.empty() && key.back() == '\r')
+            key.pop_back();
+    }
+
+    if (key.empty() || key.size() > lfsr_hash::KEY_MAX)
+        return std::nullopt;
+    return key;
+}
+
+/**
+ * @brief Найти --key/--key-file в аргументах и построить ключевой контекст.
+ * @return false, если опции заданы неверно (сообщение уже выведено).
+ */
+static bool parse_key_options(int argc, char *argv[], std::optional<lfsr_hash::key_ctx> &out)
+{
+    std::string hex;
+    std::string file;
+
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string_view a = argv[i];
+        const bool is_hex = (a == "--key" || a == "-k");
+        if (is_hex || a == "--key-file")
+        {
+            if (i + 1 >= argc)
+            {
+                std::cerr << "Ошибка: после " << a << " не указано значение.\n";
+                return false;
+            }
+            (is_hex ? hex : file) = argv[++i];
+        }
+    }
+
+    if (hex.empty() && file.empty())
+        return true; // обычный режим контрольных сумм
+
+    if (!hex.empty() && !file.empty())
+    {
+        std::cerr << "Ошибка: --key и --key-file взаимоисключающие.\n";
+        return false;
+    }
+
+    std::optional<std::vector<uint8_t>> raw;
+    if (!hex.empty())
+    {
+        raw = parse_hex_key(hex);
+        if (!raw)
+        {
+            std::cerr << "Ошибка: --key должен быть hex-строкой из 2..128 символов "
+                         "(1..64 байта).\n";
+            return false;
+        }
+    }
+    else
+    {
+        if (key_from_stdin(file) && stdin_is_tty())
+        {
+            std::cerr << "Ошибка: --key-file - читает ключ из stdin, а stdin — терминал.\n"
+                         "Перенаправьте ввод: lfsr128sum <файл> --key-file - < key.bin\n"
+                         "Для ручного ввода используйте --key <hex>.\n";
+            return false;
+        }
+        raw = read_key_file(file);
+        if (!raw)
+        {
+            std::cerr << "Ошибка: не удалось прочитать ключ из \"" << file
+                      << "\" (нужно 1..64 байта).\n";
+            return false;
+        }
+    }
+
+    try
+    {
+        out = lfsr_hash::make_key(std::as_bytes(std::span(*raw)));
+    }
+    catch (const std::invalid_argument &e)
+    {
+        std::cerr << "Ошибка: " << e.what() << "\n";
+        return false;
+    }
+    return true;
+}
+
+static bool verify_checksum_file(const fs::path& checksum_file_path,
+                                 const lfsr_hash::key_ctx* key = nullptr) {
     fs::path absolute_checksum_path = fs::absolute(checksum_file_path);
 
     std::ifstream infile(absolute_checksum_path, std::ios::binary); // Открываем как binary, чтобы точно видеть байты
@@ -175,7 +345,7 @@ static bool verify_checksum_file(const fs::path& checksum_file_path) {
                 ProgressBar dummy_bar(f_size, "Checking " + target_file.filename().string());
 
                 // Передаем dummy_bar и смещение 0
-                actual_hash = lfsr_file_hash::calculate_file_hash128(target_file, dummy_bar, 0);
+                actual_hash = lfsr_file_hash::calculate_file_hash128(target_file, dummy_bar, 0, key);
 
                 // Стираем строчку прогресс-бара, чтобы она не мешала финальному выводу статуса
                 std::cerr << "\r\033[K" << std::flush;
@@ -246,9 +416,18 @@ int main(int argc, char *argv[])
                       << "  lfsr128sum -c | --check <файл>            Проверить файлы по контрольным суммам\n\n"
                       << "Опции:\n"
                       << "  -o, --output <файл>     Записать результат напрямую в указанный файл\n"
+                      << "  -k, --key <hex>         MAC-режим: секретный ключ в hex (1..64 байта)\n"
+                      << "  --key-file <файл|->     MAC-режим: секретный ключ из файла или stdin\n"
                       << "  --test                  Запустить тесты корректности и покрытия\n"
                       << "  --bench                 Запустить бенчмарк производительности\n"
-                      << "  --version               Вывести версию программы\n";
+                      << "  --version               Вывести версию программы\n\n"
+                      << "MAC-режим: тот же алгоритм с секретным ключом. Суммы, посчитанные\n"
+                      << "с ключом, нельзя ни проверить, ни подделать без того же ключа.\n"
+                      << "Ключ дополняется нулями до 64 байт: пароль сначала прогоните через\n"
+                      << "KDF (argon2/scrypt) и возьмите 32 байта.\n"
+                      << "Ключ из stdin: --key-file - (один завершающий перевод строки\n"
+                      << "отбрасывается); --key виден в ps и истории shell — для скриптов\n"
+                      << "он не годится.\n";
             return 0;
         }
 
@@ -270,6 +449,12 @@ int main(int argc, char *argv[])
             return 0;
         }
 
+        // Keyed-режим (MAC): --key / --key-file действуют в обоих режимах.
+        std::optional<lfsr_hash::key_ctx> key_opt;
+        if (!parse_key_options(argc, argv, key_opt))
+            return 1;
+        const lfsr_hash::key_ctx *key = key_opt ? &*key_opt : nullptr;
+
         // РЕЖИМ ПРОВЕРКИ ФАЙЛА КОНТРОЛЬНЫХ СУММ
         if (arg == "--check" || arg == "-c") {
             if (argc < 3) {
@@ -277,7 +462,9 @@ int main(int argc, char *argv[])
                 return 1;
             }
             fs::path checksum_path(argv[2]);
-            bool success = verify_checksum_file(checksum_path);
+            if (key)
+                std::cerr << "MAC-режим: проверка контрольных сумм с секретным ключом.\n";
+            bool success = verify_checksum_file(checksum_path, key);
             return success ? 0 : 1;
         }
 
@@ -302,11 +489,12 @@ int main(int argc, char *argv[])
             }
         }
 
-        // ШАГ 2: Собираем только входные файлы, пропуская флаг вывода и его значение
+        // ШАГ 2: Собираем только входные файлы, пропуская служебные флаги и их значения
         for (int i = 1; i < argc; ++i) {
             std::string current_arg = argv[i];
-            if (current_arg == "-o" || current_arg == "--output") {
-                i++; // Пропускаем имя файла вывода
+            if (current_arg == "-o" || current_arg == "--output"
+                || current_arg == "-k" || current_arg == "--key" || current_arg == "--key-file") {
+                i++; // Пропускаем значение флага
                 continue;
             }
             input_files.push_back(fs::path(current_arg));
@@ -364,6 +552,8 @@ int main(int argc, char *argv[])
 
         // ШАГ 4: Инициализация сквозного прогресс-бара
         ProgressBar bar(total_bytes_to_process, "Hashing");
+        if (key)
+            std::cerr << "MAC-режим: суммы считаются с секретным ключом.\n";
         uint64_t overall_processed_bytes = 0;
 
         std::stringstream all_results;
@@ -375,7 +565,7 @@ int main(int argc, char *argv[])
 
             try {
                 // Вызываем оптимизированную функцию хэширования
-                lfsr_file_hash::u128 total_hash = lfsr_file_hash::calculate_file_hash128(file_path, bar, overall_processed_bytes);
+                lfsr_file_hash::u128 total_hash = lfsr_file_hash::calculate_file_hash128(file_path, bar, overall_processed_bytes, key);
 
                 // Накапливаем строковый результат хэша в буфер
                 all_results << lfsr_file_hash::HASH_VERSION_PREFIX
